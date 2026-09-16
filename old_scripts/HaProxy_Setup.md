@@ -18,7 +18,7 @@
 9. Optimize System (TCP/BBR ya UDP)
 
 ```
-بعد گزینه 3 رو انتخاب میکنیم
+از منوی 9 بعد گزینه 3 رو انتخاب میکنیم
 
 ```
 1) Optimize for TCP / WebSocket (BBR + large TCP buffers)
