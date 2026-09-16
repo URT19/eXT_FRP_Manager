@@ -82,11 +82,11 @@ Select preset [1-7]:
 3) Mix TCP + WS    — tedad dasti
 ```
 
-ارم تعداد تانل های tcp رو میخواد
+از ما تعداد تانل های tcp رو میخواد
 
 ```
 TCP count:
-``
+```
 
 3 رو وارد میکنم
 
