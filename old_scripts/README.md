@@ -71,7 +71,7 @@ frp_manager.sh
 2. Setup Server (Iran)
 ```
 
-<img width="670" height="674" alt="image" src="https://github.com/user-attachments/assets/d017e6ec-8195-4934-aaf0-6913502f70f2" />
+
 
 ### راهنمای راه‌اندازی سرور ایران (TCP)
 
