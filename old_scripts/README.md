@@ -41,10 +41,14 @@
 ## نصب Multi-Protocol Tunnel Manager
 
 
+
+#### بصورت آتلاین
 ```bash
 bash <(wget -qO- https://raw.githubusercontent.com/URT19/eXT_FRP_Manager/refs/heads/main/old_scripts/frp_manager_1.7.0.sh)
 ```
 
+
+### بصورت آفلاین
 یا به‌صورت نصب در لینوکس و استفاده آفلاین:
 
 ```bash
@@ -63,7 +67,7 @@ frp_manager.sh
 
 <img width="316" height="67" alt="image" src="https://github.com/user-attachments/assets/0a1817bd-58d1-4a28-9648-c4dc17e29c38" />
 
-اول اسکریپت نشان می‌دهد که سرور ایران است یا خارج.  
+با اجرا کردن برنامه، اول اسکریپت نشان می‌دهد که سرور ایران است یا خارج.  
 اگر اشتباه نشان داده شده، از طریق **منوی ۸** نوع سرور (ایران یا خارج) را تغییر دهید.
 
 
