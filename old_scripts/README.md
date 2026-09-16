@@ -105,7 +105,6 @@ frp_manager.sh
 
   من اینجا عدد 1 رو وارد میکنم تا تنظیمات پیشنهادی خودش رو اعمال کنه
 
-  <img width="694" height="358" alt="image" src="https://github.com/user-attachments/assets/f520b809-df49-4a22-9f48-5c09a5db9aa7" />
 
 ---
 
