@@ -13,6 +13,10 @@
 
 ---
 
+[آموزش ساخت تانل چندتایی و مدیریت با haproxy](https://github.com/URT19/eXT_FRP_Manager/blob/main/old_scripts/HaProxy_Setup.md)
+
+---
+
 ### ویژگی‌ها
 
 - مدیریت همزمان چند تونل (تا ۱۰ تونل برای هر پروتکل)
