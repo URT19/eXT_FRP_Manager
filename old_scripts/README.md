@@ -36,9 +36,7 @@
 
 می‌توانید قبل از اجرای این اسکریپت از طریق پروژه زیر چک کنید کدام پروتکل‌ها برای شما آزاد هستند:
 
-```
-https://github.com/URT19/eXT_FRP_Manager/tree/main/protocol_tester
-```
+[FRP Protocol Tester](https://github.com/URT19/eXT_FRP_Manager/tree/main/protocol_tester)
 
 -----
 
