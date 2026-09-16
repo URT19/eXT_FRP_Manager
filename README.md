@@ -4,7 +4,8 @@
 
 **مدیر پیشرفته تونل FRP چندپروتکلی با تجمیع HAProxy**
 
-<img width="672" height="648" alt="eXtreme FRP Preview" src="https://github.com/user-attachments/assets/d2e3111a-4aa6-4635-9848-389b5894fab7" />
+<img width="674" height="648" alt="image" src="https://github.com/user-attachments/assets/b246232a-4156-4c80-96ca-f8c1139d7913" />
+
 
 [![Version](https://img.shields.io/badge/version-3.0.0-blue?style=for-the-badge)](https://github.com/ExtremeDot/frp_manager)
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
