@@ -1,0 +1,25 @@
+[project]
+name = "frp-manager"
+version = "3.1"
+description = "Advanced FRP Multi-Protocol Tunnel Manager with HAProxy aggregation + Textual TUI"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0.0",
+    "questionary>=2.0.0",
+    "pydantic>=2.0.0",
+    "tomli-w>=1.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+    "textual>=0.60.0",
+    "psutil>=5.9.0",
+]
+
+[project.scripts]
+frp-manager = "frp_manager.__main__:main"
+frp-tui     = "frp_manager.tui.app:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["frp_manager*"]

@@ -1,0 +1,35 @@
+eXtreme FRP — Clean Source Export
+===================================
+
+Exported  : 2026-09-15 11:24:37 UTC
+Package   : eXtreme FRP Manager v3.0.0
+
+Contents
+--------
+✅ frp_manager/       (Python package)
+✅ tests/             (test suite)
+✅ pyproject.toml     (dependencies)
+✅ install.sh         (installer)
+✅ README.md
+✅ LICENSE
+
+EXCLUDED (never included):
+  ❌ data/state.json         (server config, IPs, tokens)
+  ❌ data/configs/*.toml     (frps/frpc configs)
+  ❌ data/haproxy/*.cfg      (HAProxy config)
+  ❌ data/exports/*.txt      (compact files)
+  ❌ data/backups/*          (backups)
+  ❌ data/logs/*             (runtime logs)
+  ❌ venv/                   (virtual environment)
+  ❌ __pycache__/ *.pyc      (bytecode)
+  ❌ *.bak *.bak.* *.old     (file backups)
+  ❌ *.ps1 *.gh_config.json  (local scripts)
+  ❌ .git/                   (version history)
+
+Installation
+------------
+  unzip frp-manager-clean-*.zip
+  cd frp-manager
+  sudo bash install.sh
+  sudo frp-cli
+
