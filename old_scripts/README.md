@@ -13,6 +13,8 @@
 
 ---
 
+## آموزش ها
+
 ### [آموزش ساخت تانل چندتایی و مدیریت با haproxy](https://github.com/URT19/eXT_FRP_Manager/blob/main/old_scripts/HaProxy_Setup.md)
 
 ### آ[موزش ساخت ارتباط بصورت یک تانل (کانال)](https://github.com/URT19/eXT_FRP_Manager/blob/main/old_scripts/README.md#%D8%A2%D9%85%D9%88%D8%B2%D8%B4-%D8%B1%D8%A7%D9%87-%D8%A7%D9%86%D8%AF%D8%A7%D8%B2%DB%8C-%DB%8C%DA%A9-%D8%AA%D8%A7%D9%86%D9%84-%D8%B3%D8%A7%D8%AF%D9%87)
@@ -227,6 +229,6 @@ frp_manager.sh
 ### Linux Benchmark
 
 ```bash
-curl -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/ExtremeDot/Linux-Bench-/master/bench.sh?$RANDOM" -o bench.sh && chmod +x bench.sh
+curl -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/URT19/MyLinuxTools/refs/heads/main/Linux-Bench/bench.sh?$RANDOM" -o bench.sh && chmod +x bench.sh
 sudo ./bench.sh
 ```
