@@ -1539,7 +1539,7 @@ EOF
         # ========== KHAREJ SIDE - compact paste ==========
         echo -e "\n${YELLOW}--- Configuring KHAREJ side (frpc clients) ---${NC}"
         echo -e "${YELLOW}IP ya domain server Iran (hamanja ke frps + HAProxy hast).${NC}"
-        echo -e "  Mesal: 89.45.68.172   ya   iran.example.com"
+        echo -e "  Mesal: 2.3.4.5   ya   iran.example.com"
         read -p "Iran Server IP/Domain: " IRAN_IP
 
         echo -e "\n${CYAN}Local service port(s) on THIS server (Kharej)${NC}"
