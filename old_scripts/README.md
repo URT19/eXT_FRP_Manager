@@ -30,7 +30,7 @@
 می‌توانید قبل از اجرای این اسکریپت از طریق پروژه زیر چک کنید کدام پروتکل‌ها برای شما آزاد هستند:
 
 ```
-https://github.com/ExtremeDot/Tunnel-Protocol-tester
+https://github.com/URT19/eXT_FRP_Manager/tree/main/protocol_tester
 ```
 
 -----
@@ -39,13 +39,13 @@ https://github.com/ExtremeDot/Tunnel-Protocol-tester
 
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/ExtremeDot/xTunnel_Bench/main/frp_manager.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/URT19/eXT_FRP_Manager/refs/heads/main/old_scripts/frp_manager_1.7.0.sh)
 ```
 
 یا به‌صورت نصب در لینوکس و استفاده آفلاین:
 
 ```bash
-curl -sSL -o /usr/local/bin/frp_manager.sh https://raw.githubusercontent.com/ExtremeDot/xTunnel_Bench/main/frp_manager.sh && chmod +x /usr/local/bin/frp_manager.sh && /usr/local/bin/frp_manager.sh
+curl -sSL -o /usr/local/bin/frp_manager.sh https://raw.githubusercontent.com/URT19/eXT_FRP_Manager/refs/heads/main/old_scripts/frp_manager_1.7.0.sh && chmod +x /usr/local/bin/frp_manager.sh && /usr/local/bin/frp_manager.sh
 ```
 
 بعد با دستور زیر اجرا کنید:
