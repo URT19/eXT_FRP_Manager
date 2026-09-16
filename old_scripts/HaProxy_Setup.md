@@ -206,7 +206,146 @@ Press Enter to return...
 ----
 
 
-###روی سرور خارج
+### روی سرور خارج
+
+
+وارد منوی 10 شده و سپس گزینه 2 رو میزنیم
+
+```
+10. Aggregation Multi-Tunnel ba HAProxy (Bandwidth bala)
+```
+
+
+```
+2) Kharej (frpc)  ← baad, line-haye compact az Iran ra paste kon
+
+```
+
+اسکریپت از ما آدرس آی پی سرور ایران رو میخواد
+
+
+```
+--- Configuring KHAREJ side (frpc clients) ---
+IP ya domain server Iran (hamanja ke frps + HAProxy hast).
+  Mesal: 2.3.4.5   ya   iran.example.com
+Iran Server IP/Domain:
+```
+
+آی پی سرور ایران رو وارد میکنیم و Enter میزنیم
+
+
+توی قسمت بعدی از ما میخواد پورت کانفیگ VPN رو وارد کنیم، روی سرور من برای 443 هست و عدد 443 رو وارد میکنم
+
+```
+Local service port(s) on THIS server (Kharej)
+Inja Xray/service rooye 127.0.0.1 gush midahad (na port public Iran).
+Agar chand config Xray dari, baraye har goruh tunnel localPort joda bedeh.
+  Mesal 1: 443                    → hame tunnel-ha be 443
+  Mesal 2: 1=443,2=443,3=2080,4=2080
+  Mesal 3: 1-2=443,3-4=2090,5-6=8080
+  Mesal 4: 443,8080               → avalin port = default (443)
+Default: 443
+In adad bayad ba inbound Xray rooye HAMIN server yeki bashad.
+  Agar HAProxy Iran port 443 → tunnel 1-2 va Xray Kharej :443  →  1-2=443
+  Agar HAProxy Iran port 2090 → tunnel 3-4 va Xray :2090 →  3-4=2090
+  Port public Iran ra inja NA-nevis; faqat port local Xray/service.
+Local port map [443]:
+```
+
+در مرحله بعدی از وارد کردن کانفیگ ها رو میخواد
+
+باید لینک هایی که توی سرور ایران برامون نمایش داده شده رو اینجا وارد کنیم
+
+
+توی سرور ایران این لینک ها به من داده شد
+```
+4,tcp,57909,nZdawJt9GmnFUTaq,20400,21400
+5,tcp,46175,rZdJtnGMYnFUymoi,20401,21401
+6,tcp,42109,jZdJt9GMYghfgTai,20402,21402
+7,ws,41076,oZdJt9GMYndyasdf,20403,21403
+8,ws,46759,qZdJt9GMdYnszcvai,20404,21404
+9,ws,46192,sZdJt9GsMYnFupak,20405,21405
+```
+همینا رو paste میکنم و Enter میزنم
+
+برای تایید اتمام لینک ها دوباره Enter میزنم
+
+
+
+بعد از زدن Enter سرور شروع به ساختن کانفیگ ها و برقراری تانل میکنه
+
+
+درانتها هم این متن رو نشون میده
+
+```
+================ KHAREJ SIDE READY ================
+Primary local service port used: 443
+Note: HAProxy on Iran routes different *public* ports to different tunnel groups.
+On Kharej the real service usually listens on one port; all tunnels of a group
+point to that same local service. Multiple public ports → same backend is fine.
+
+Test: iperf3 from Iran to the aggregated iperf port with -P 16
+===================================================
+
+Press Enter to return...
+```
+
+---------
+
+برای چک کردن سلامت تانل ها همیشه باید از سرور خارج چک کنیم
+
+از منوی شماره 4 وارد شده
+
+```
+4. Check Salamat Tunnel
+```
+
+
+بعد نوع پروتوکل رو میپرسه
+
+```
+Select Protocol:
+  1) TCP          (Best pure performance / recommended for aggregation)
+  2) KCP          (Good for lossy networks)
+  3) QUIC         (Modern + good bandwidth)
+  4) WebSocket    (Bypass firewall/proxy)
+Choose [1-4]:
+```
+
+توی منوی بالا نشون میده نوع تانل ها چیه؟
+
+
+<img width="781" height="508" alt="image" src="https://github.com/user-attachments/assets/5239aacc-f7f7-40bd-92d1-753f136d6f3c" />
+
+
+مثلا من میخوام وضعیت تانل شماره 3 رو چک کنم
+
+
+
+
+
+مشخصات تانل من اینه
+
+```
+Tunnel 3 [TCP Client / KHAREJ | Name: agg3] Status: [ONLINE] | Ports: [20102,21102]
+```
+
+چون tcp هست گزینه 1 رو انتخاب میکنم
+
+بعد ازم شماره تانل رو میپرسه 
+```
+Enter Tunnel Index (1 to 10):
+
+```
+
+شماره تانل من شماره 3 هست، عدد 3 رو وارد میکنم، در انتها وضعیت تانل رو نشون میده که وصل هست یا نه؟
+
+
+
+<img width="767" height="604" alt="image" src="https://github.com/user-attachments/assets/76740903-3ff2-4689-b728-3f64f2d9c94e" />
+
+
+
 
 
 
