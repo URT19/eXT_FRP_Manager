@@ -24,9 +24,12 @@
 
 ---
 
+### [نسخه قدیمی را از اینجا ببینید](https://github.com/URT19/eXT_FRP_Manager/tree/main/old_scripts)
+
+----
 ## 📥 دانلود
 
-### آخرین نسخه: v3.0.0
+### آخرین نسخه: v3.1
 
 <div align="center">
 
