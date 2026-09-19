@@ -56,8 +56,8 @@
 apt install unzip
 mkdir -p frp_data
 cd frp_data
-wget https://github.com/URT19/eXT_FRP_Manager/releases/download/v3.1/frp-manager_v3.1.zip
-unzip frp-manager_v3.1.zip
+wget https://github.com/URT19/eXT_FRP_Manager/releases/download/v3.7/frp-manager_v3.7.zip
+unzip frp-manager_v3.7.zip
 
 ```
 
