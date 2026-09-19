@@ -35,9 +35,11 @@
 ----
 ## 📥 دانلود
 
-### آخرین نسخه: v3.1
+### آخرین نسخه: v3.7
 
 <div align="center">
+
+[[Download V3.7 ]](https://github.com/URT19/eXT_FRP_Manager/releases/download/v3.7/frp-manager_v3.7.zip)
 
 [Download V3.1 ](https://github.com/URT19/eXT_FRP_Manager/releases/download/v3.1/frp-manager_v3.1.zip)
 
