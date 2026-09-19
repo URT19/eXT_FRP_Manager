@@ -25,6 +25,11 @@
 
 ---
 
+
+می‌توانید قبل از اجرای این اسکریپت از طریق [[FRP Protocol Tester]](https://github.com/URT19/eXT_FRP_Manager/tree/main/protocol_tester)  چک کنید، کدام پروتوکل ها، شامل TCP,KCP,Quic و WebSocket بین دو سرور ایران و خارج براتون کار میده.
+
+-----
+
 ### [نسخه قدیمی را از اینجا ببینید](https://github.com/URT19/eXT_FRP_Manager/tree/main/old_scripts)
 
 ----
