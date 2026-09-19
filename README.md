@@ -9,7 +9,7 @@
 
 
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue?style=for-the-badge)](https://github.com/ExtremeDot/frp_manager)
+[![Version](https://img.shields.io/badge/version-3.7.0-blue?style=for-the-badge)](https://github.com/ExtremeDot/frp_manager)
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Ubuntu](https://img.shields.io/badge/ubuntu-22.04%20%7C%2024.04-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](https://ubuntu.com/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
