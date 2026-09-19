@@ -3,7 +3,7 @@ from pathlib import Path
 
 # --- App metadata ---
 APP_NAME = "frp-manager"
-APP_VERSION = "3.1"
+APP_VERSION = "3.7"
 FRP_VERSION = "0.71.0"
 
 # --- Data directory (self-contained) ---

@@ -22,7 +22,7 @@ from .constants import (
 from .frp import installer, server as frp_server, client as frp_client, compact
 from .haproxy import config as hap_cfg, service as hap_svc
 from .i18n import t
-from .models import Node, Channel, Route
+from .models import Node, Channel, Route, Hub, ROLE_META
 from .system import net, systemd, optimize
 from .ui import logo, prompts, tables, shortcuts, help as help_ui
 from .ui.header import render_top_header
@@ -48,7 +48,8 @@ C_SUCCESS = "#7ec699"       # success green
 C_INFO = "#5b9bff"          # info blue
 C_WARNING = "#ffb86c"       # warning orange
 C_DANGER = "#ff6b6b"        # destructive red
-C_ACCENT = "#a78bfa"        # purple accent
+C_ACCENT = "#a78bfa"
+C_CYAN = "#56d4dd"           # soft cyan (aliases)        # purple accent
 
 # Fixed UI width (prevents panels stretching to terminal width)
 MIN_WIDTH = 95
@@ -128,59 +129,180 @@ def get_cached_public_ip(st: dict, force_refresh: bool = False) -> str:
 #  Smart Advisor
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+
+def _resolve_node_name(st: dict, ch) -> str:
+    """Resolve the Hub name for a channel by matching serverAddr to node.host.
+
+    Priority:
+      1. Match frpc config serverAddr IP to a node.host
+      2. Fallback to ch.node (may be stale)
+    """
+    from .constants import CONFIG_DIR
+
+    # Try to read the frpc config
+    try:
+        cfg_path = CONFIG_DIR / f"frpc_{ch.name}.toml"
+        if cfg_path.exists():
+            content = cfg_path.read_text()
+            m = re.search(r'serverAddr\s*=\s*"([^"]+)"', content)
+            if m:
+                hub_ip = m.group(1)
+                # Find node with this host
+                for node in state.list_nodes(st):
+                    if node.host == hub_ip:
+                        return node.name
+                # No matching node — return IP
+                return hub_ip
+    except Exception:
+        pass
+
+    # Fallback to stored node name
+    return ch.node
+
+
+def _count_channels_for_node(st: dict, node_name: str, node_host: str) -> int:
+    """Count channels that belong to this node (by name OR by host IP)."""
+    from .constants import CONFIG_DIR
+
+    count = 0
+    for ch in state.list_channels(st):
+        # Match by name
+        if ch.node == node_name:
+            count += 1
+            continue
+
+        # Match by host IP
+        try:
+            cfg_path = CONFIG_DIR / f"frpc_{ch.name}.toml"
+            if cfg_path.exists():
+                content = cfg_path.read_text()
+                m = re.search(r'serverAddr\s*=\s*"([^"]+)"', content)
+                if m and m.group(1) == node_host:
+                    count += 1
+        except Exception:
+            pass
+
+    return count
+
+
 def build_kharej_health_summary(st: dict, d: Defaults) -> Optional[Panel]:
-    """Compact health panel for KHAREJ servers with properly styled status."""
+    """Compact per-hub status panel for KHAREJ (single-line rows)."""
     channels = state.list_channels(st)
     if not channels:
         return None
 
-    body = Text()
-    online_count = 0
-
+    groups = {}
     for ch in channels:
-        svc = ch.frpc_service
-        active = systemd.is_active(svc)
+        groups.setdefault(ch.hub, []).append(ch)
 
-        # Check whether the local service is listening
-        local_listening = False
-        try:
-            local_listening = not net.is_port_free(ch.target_port)
-        except Exception:
-            local_listening = False
+    body = Text()
+    total = len(channels)
+    total_online = 0
+    total_offline = 0
 
-        # Determine status
-        if active and local_listening:
+    for hub_name in sorted(groups.keys()):
+        hub_channels = groups[hub_name]
+        online = 0
+        offline = 0
+        by_proto = {"tcp": 0, "kcp": 0, "quic": 0, "ws": 0}
+        routes = set()
+
+        for ch in hub_channels:
+            active = (
+                systemd.is_active(ch.frps_service)
+                or systemd.is_active(ch.frpc_service)
+            )
+            if active:
+                online += 1
+                total_online += 1
+            else:
+                offline += 1
+                total_offline += 1
+            if ch.proto in by_proto:
+                by_proto[ch.proto] += 1
+            routes.add(ch.target_port)
+
+        if offline == 0:
             icon = "\u25cf"
-            label = "ONLINE"
-            status_color = C_SUCCESS
-            online_count += 1
-        elif active and not local_listening:
-            icon = "\u25cf"
-            label = "NO SERVICE"
-            status_color = C_WARNING
-        else:
+            row_color = C_SUCCESS
+        elif online == 0:
             icon = "\u25cb"
-            label = "OFFLINE"
-            status_color = C_DANGER
+            row_color = C_DANGER
+        else:
+            icon = "\u25d0"
+            row_color = C_WARNING
 
-        # Build row using Text.append with style (not markup)
+        # Compact row
         body.append("  ", style="")
-        body.append(icon, style=f"bold {status_color}")
-        body.append(" ", style="")
-        body.append(f"{label:<11}", style=f"bold {status_color}")
-        body.append(" ", style="")
-        body.append(ch.name, style=f"bold {C_KHAREJ}")
-        body.append("  \u2192 ", style=C_MUTED)
-        body.append(f"127.0.0.1:{ch.target_port}", style=C_KHAREJ)
+        body.append(icon + " ", style=f"bold {row_color}")
+        body.append(f"{hub_name}", style=f"bold {C_IRAN}")
+        body.append(" \u2502 ", style=C_DIM)
+        body.append(f"{len(hub_channels)}", style=f"bold {C_KHAREJ}")
+        body.append(" tun", style=C_MUTED)
+
+        proto_colors = {
+            "tcp": C_INFO,
+            "kcp": C_ACCENT,
+            "quic": C_IRAN,
+            "ws": C_SUCCESS,
+        }
+        proto_parts = []
+        for proto in ("tcp", "kcp", "quic", "ws"):
+            count = by_proto[proto]
+            if count > 0:
+                pc = proto_colors.get(proto, C_NEUTRAL)
+                proto_parts.append((proto.upper(), count, pc))
+
+        if proto_parts:
+            body.append(" \u2502 ", style=C_DIM)
+            for i, (pname, pcount, pc) in enumerate(proto_parts):
+                if i > 0:
+                    body.append(" ", style="")
+                body.append(f"{pname}:", style=C_MUTED)
+                body.append(f"{pcount}", style=f"bold {pc}")
+
+        body.append(" \u2502 ", style=C_DIM)
+        body.append("\u25cf", style=f"bold {C_SUCCESS}")
+        body.append(f"{online}", style=f"bold {C_SUCCESS}")
+        if offline > 0:
+            body.append(" ", style="")
+            body.append("\u25cb", style=f"bold {C_DANGER}")
+            body.append(f"{offline}", style=f"bold {C_DANGER}")
+
+        if routes:
+            routes_str = ",".join(str(r) for r in sorted(routes))
+            body.append(" \u2502 ", style=C_DIM)
+            body.append(f"\u2192{routes_str}", style=f"bold {C_IRAN}")
+
         body.append("\n", style="")
 
-    total = len(channels)
+    # Total
+    body.append("  ", style="")
+    body.append("\u2500" * 50, style=C_DIM)
+    body.append("\n  ", style="")
+    body.append("Total: ", style=C_MUTED)
+    body.append(f"{total}", style=f"bold {C_KHAREJ}")
+    body.append(" channels", style=C_MUTED)
+    body.append("  \u2502  ", style=C_DIM)
+    body.append("\u25cf", style=f"bold {C_SUCCESS}")
+    body.append(f"{total_online}", style=f"bold {C_SUCCESS}")
+    if total_offline > 0:
+        body.append(" ", style="")
+        body.append("\u25cb", style=f"bold {C_DANGER}")
+        body.append(f"{total_offline}", style=f"bold {C_DANGER}")
+
+    if total_offline == 0:
+        border = C_SUCCESS
+    elif total_online == 0:
+        border = C_DANGER
+    else:
+        border = C_WARNING
+
     title = (
         f"[{C_KHAREJ}] \U0001f4e1 Channel Status [/] "
-        f"[{C_MUTED}]({online_count}/{total} online)[/] "
+        f"[{C_MUTED}]({len(groups)} hub(s) \u2014 {total_online}/{total} online)[/] "
     )
-
-    border = C_SUCCESS if online_count == total else C_WARNING
 
     return Panel(
         body,
@@ -472,13 +594,14 @@ def render_header(st: dict, loc: str, d: Defaults) -> None:
     n_channels = len(state.list_channels(st))
 
     cnt_txt = Text()
-    cnt_txt.append(" Nodes    ", style=C_MUTED)
+    cnt_txt.append(" Hubs     ", style=C_MUTED)
     cnt_txt.append(": ", style=C_DIM)
     cnt_txt.append(f"{n_nodes}\n", style=f"bold {C_KHAREJ}")
 
-    cnt_txt.append(" Routes   ", style=C_MUTED)
-    cnt_txt.append(": ", style=C_DIM)
-    cnt_txt.append(f"{n_routes}\n", style=f"bold {C_IRAN}")
+    if loc == "IRAN":
+        cnt_txt.append(" Routes   ", style=C_MUTED)
+        cnt_txt.append(": ", style=C_DIM)
+        cnt_txt.append(f"{n_routes}\n", style=f"bold {C_IRAN}")
 
     cnt_txt.append(" Channels ", style=C_MUTED)
     cnt_txt.append(": ", style=C_DIM)
@@ -558,10 +681,7 @@ def render_menu(st: dict, loc: str, d: Defaults) -> None:
         add("2", "Wizard", C_MUTED, disabled=True, reason="IRAN only")
 
     n_nodes = len(state.list_nodes(st))
-    if is_iran:
-        add("3", "Modiriyat Node-ha", side, f"[{C_MUTED}]({n_nodes})[/]")
-    else:
-        add("3", "Modiriyat Node-ha", C_MUTED, disabled=True, reason="IRAN only")
+    add("3", "Modiriyat Hub-ha", side, f"[{C_MUTED}]({n_nodes})[/]")
 
     if adv:
         if is_iran:
@@ -701,22 +821,152 @@ def render_menu(st: dict, loc: str, d: Defaults) -> None:
             width=MIN_WIDTH,
         ))
 
-def render_nodes_table(nodes: list[Node], st: dict) -> None:
-    if not nodes:
-        console.print(f"[yellow]{t('nodes_no', load_defaults())}[/]")
+def render_hubs_table(hubs: list, st: dict) -> None:
+    """Render hubs table with type, routes (from channels), and channel counts."""
+    if not hubs:
+        console.print(f"[yellow]Hich Hub-i tarif nashode.[/]")
+        console.print()
+        console.print(f"[{C_MUTED}]Baraye add kardan: menu [1][/]")
         return
-    tbl = Table(title="Nodes", show_lines=False, box=box.ROUNDED)
+
+    tbl = Table(title="Hubs", show_lines=False, box=box.ROUNDED)
     tbl.add_column("#", style="dim", width=3)
     tbl.add_column("Name", style="cyan bold")
     tbl.add_column("Host", style="yellow")
     tbl.add_column("Location", style="green")
+    tbl.add_column("Type", style="magenta")
+    tbl.add_column("Routes", style="bright_yellow")
     tbl.add_column("Channels", justify="right")
     tbl.add_column("Note", style="dim")
-    for i, n in enumerate(nodes, 1):
-        ch_count = len(state.list_channels(st, node=n.name))
-        tbl.add_row(str(i), n.name, n.host, n.location or "—",
-                    str(ch_count), n.note or "—")
+
+    for i, h in enumerate(hubs, 1):
+        # ─── Count channels + collect routes ───
+        channels = _channels_for_hub(st, h.name, h.host)
+        ch_count = len(channels)
+        ch_routes = sorted({c.target_port for c in channels})
+
+        # ─── Determine type from channels (dynamic) ───
+        if ch_count == 0:
+            hub_type = "empty"
+        elif ch_count == 1:
+            hub_type = "simple"
+        else:
+            hub_type = "balanced"
+
+        type_colors = {
+            "simple": C_INFO,
+            "balanced": C_SUCCESS,
+            "empty": C_MUTED,
+            "manual": C_WARNING,
+        }
+        type_color = type_colors.get(hub_type, C_MUTED)
+        type_txt = f"[{type_color}]{hub_type}[/]"
+
+        # ─── Routes display ───
+        if ch_routes:
+            routes_txt = ", ".join(str(p) for p in ch_routes[:4])
+            if len(ch_routes) > 4:
+                routes_txt += f" +{len(ch_routes) - 4}"
+        else:
+            routes_txt = "\u2014"
+
+        tbl.add_row(
+            str(i),
+            h.name,
+            h.host,
+            h.location or "\u2014",
+            type_txt,
+            routes_txt,
+            str(ch_count),
+            h.note or "\u2014",
+        )
+
     console.print(tbl)
+
+
+def _channels_for_hub(st: dict, hub_name: str, hub_host: str) -> list:
+    """Get channels for a hub (by name OR by host IP from frpc config)."""
+    from .constants import CONFIG_DIR
+    import re as _re
+
+    matched = []
+
+    for ch in state.list_channels(st):
+        # Match by hub name
+        if ch.hub == hub_name:
+            matched.append(ch)
+            continue
+
+        # Match by host IP (from frpc config)
+        try:
+            cfg_path = CONFIG_DIR / f"frpc_{ch.name}.toml"
+            if cfg_path.exists():
+                content = cfg_path.read_text()
+                m = _re.search(r'serverAddr\s*=\s*"([^"]+)"', content)
+                if m and m.group(1) == hub_host:
+                    matched.append(ch)
+        except Exception:
+            pass
+
+    return matched
+
+
+def _count_channels_for_hub(st: dict, hub_name: str, hub_host: str) -> int:
+    """Backward-compat: just channel count."""
+    return len(_channels_for_hub(st, hub_name, hub_host))
+
+
+def _hub_channels_and_routes(st: dict, hub_name: str, hub_host: str):
+    """Return (channel_count, sorted_routes)."""
+    channels = _channels_for_hub(st, hub_name, hub_host)
+    routes = sorted({c.target_port for c in channels})
+    return len(channels), routes
+
+
+
+def _hub_channels_and_routes(st: dict, hub_name: str, hub_host: str):
+    """Return (channel_count, sorted_routes) for this hub.
+
+    Matches by hub name OR by host IP (from frpc config serverAddr).
+    """
+    from .constants import CONFIG_DIR
+    import re as _re
+
+    channels = []
+    routes = set()
+
+    for ch in state.list_channels(st):
+        matched = False
+
+        # Match by hub name
+        if ch.hub == hub_name:
+            matched = True
+
+        # Match by host IP (frpc config)
+        if not matched:
+            try:
+                cfg_path = CONFIG_DIR / f"frpc_{ch.name}.toml"
+                if cfg_path.exists():
+                    content = cfg_path.read_text()
+                    m = _re.search(r'serverAddr\s*=\s*"([^"]+)"', content)
+                    if m and m.group(1) == hub_host:
+                        matched = True
+            except Exception:
+                pass
+
+        if matched:
+            channels.append(ch)
+            routes.add(ch.target_port)
+
+    return len(channels), sorted(routes)
+
+
+def _count_channels_for_hub(st: dict, hub_name: str, hub_host: str) -> int:
+    """Backward-compat: just channel count."""
+    count, _ = _hub_channels_and_routes(st, hub_name, hub_host)
+    return count
+
+
 
 
 def render_nodes_table_kharej(nodes: list[Node], st: dict) -> None:
@@ -726,7 +976,7 @@ def render_nodes_table_kharej(nodes: list[Node], st: dict) -> None:
     Channel counts live on the Hub, not here.
     """
     if not nodes:
-        console.print(f"[{C_MUTED}]Hich node-i tarif nashode.[/]")
+        console.print(f"[{C_MUTED}]Hich Hub-i tarif nashode.[/]")
         return
 
     tbl = Table(title="Nodes (read-only)", show_lines=False, box=box.ROUNDED)
@@ -747,91 +997,838 @@ def render_nodes_table_kharej(nodes: list[Node], st: dict) -> None:
     console.print(tbl)
 
 
-def manage_nodes(st: dict, d: Defaults, loc: str = "IRAN") -> None:
-    """Manage nodes.
+def manage_hubs(st: dict, d: Defaults, loc: str = "IRAN") -> None:
+    """Manage hubs with role-aware UI.
 
-    On IRAN: full CRUD (nodes are physical Kharej servers).
-    On KHAREJ: read-only view + clear guidance.
+    On KHAREJ:  Hub = Server-e IRAN  (role=iran_server)
+    On IRAN:    Hub = Server-e KHAREJ (role=kharej_server)
     """
+    # Determine which role we are managing from this side
+    local_role = "iran_server" if loc == "KHAREJ" else "kharej_server"
+    meta = ROLE_META[local_role]
+
     while True:
-        render_top_header(version=APP_VERSION, width=MIN_WIDTH)
+        console.clear()
 
-        nodes = state.list_nodes(st)
+        all_hubs = state.list_hubs(st)
+        # Show all hubs (role filter removed for backward-compat)
+        hubs = all_hubs
 
-        # ═══════════════════════════════════════════════════════
-        #  KHAREJ: read-only mode
-        # ═══════════════════════════════════════════════════════
-        if loc != "IRAN":
-            console.print(
-                Panel(
-                    Text.from_markup(
-                        f"[bold {C_KHAREJ}]\U0001f4e1 Node-ha rooye KHAREJ (in server)[/]\n\n"
-                        f"  [{C_TITLE}]Node-ha dar inja faghat "
-                        f"[bold]esm-e server-e IRAN (Hub)[/] hastan ke frpc behesh[/]\n"
-                        f"  [{C_TITLE}]vasl mishe. Modiriyat-e asli-e node-ha az rooye "
-                        f"[bold {C_IRAN}]server-e IRAN[/] anjam mishe.[/]\n\n"
-                        f"  [{C_MUTED}]\u2022 Add / Edit / Delete-e node-ha rooye IRAN ast[/]\n"
-                        f"  [{C_MUTED}]\u2022 Inja faghat mitooni bebinishoon[/]\n"
-                        f"  [{C_MUTED}]\u2022 Baraye import-e channel-haye jadid: Menu [8][/]\n"
-                    ),
-                    border_style=C_KHAREJ,
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
-            )
-            console.print()
-            render_nodes_table_kharej(nodes, st)
-            console.print()
-            console.print(f"[{C_MUTED}]Baraye bargasht be menu, Enter bezan...[/]")
-            prompts.ask("", allow_empty=True)
-            return
+        # ─── Info panel ───
+        info_body = Text()
+        info_body.append("\n  ", style="")
+        info_body.append("Current server:     ", style=C_MUTED)
+        info_body.append_text(Text.from_markup(
+            f"[bold {C_IRAN if loc == 'IRAN' else C_KHAREJ}]● {loc}[/]"
+        ))
+        info_body.append("\n  ", style="")
+        info_body.append("Managing:           ", style=C_MUTED)
+        info_body.append_text(Text.from_markup(
+            f"[bold {meta['color']}]{meta['badge']}[/]"
+        ))
+        info_body.append("\n\n")
+        info_body.append(f"  {meta['what']}\n", style=C_TITLE)
+        info_body.append(f"  Mesal: {meta['example']}\n", style=C_MUTED)
+        info_body.append("\n")
+        info_body.append("  \U0001f4cb Workflow:\n", style=C_TITLE)
+        for line in meta["workflow"]:
+            info_body.append(f"  {line}\n", style=C_MUTED)
+        info_body.append("\n")
 
-        # ═══════════════════════════════════════════════════════
-        #  IRAN: full management
-        # ═══════════════════════════════════════════════════════
         console.print(Panel(
-            Text.from_markup(
-                f"[bold {C_IRAN}]\U0001f5a5  Modiriyat-e Node-ha (server-haye kharej)[/]\n\n"
-                f"  [{C_MUTED}]Har Node = yek server-e kharej ke traffic behesh mire.[/]\n"
-                f"  [{C_MUTED}]Mesal: Hetzner (Germany), Vultr (NL), ...[/]\n\n"
-                f"  [{C_MUTED}]Be har node mitooni chand channel bekhshi.[/]\n"
-                f"  [{C_MUTED}]Mesal: :443 \u2192 6 channel \u2192 Hetzner:443[/]"
-            ),
-            border_style=C_IRAN,
+            info_body,
+            title=f"[bold {meta['color']}] \U0001f5a5  {meta['menu_title']} [/]",
+            border_style=meta["color"],
             box=box.ROUNDED,
             padding=(0, 1),
             width=MIN_WIDTH,
         ))
         console.print()
 
-        render_nodes_table(nodes, st)
+        # ─── Table ───
+        render_hubs_table(hubs, st)
+        console.print()
 
-        console.print(f"\n[{C_INFO}]1[/] {t('nodes_add', d)}")
-        console.print(f"[{C_INFO}]2[/] {t('nodes_edit', d)}")
-        console.print(f"[{C_DANGER}]3[/] {t('nodes_remove', d)}")
-        console.print(f"[{C_MUTED}]h[/] Help")
-        console.print(f"[{C_MUTED}]0[/] {t('back', d)}")
+        # ─── Menu ───
+        console.print(f"[{C_INFO}]1[/] Add {meta['badge']}")
+        if hubs:
+            console.print(f"[{C_INFO}]2[/] Edit Hub")
+            console.print(f"[{C_INFO}]3[/] Manage Channels")
+            console.print(f"[{C_DANGER}]4[/] Remove Hub")
+        console.print(f"[{C_MUTED}]h[/] Rahnama")
+        console.print(f"[{C_MUTED}]0[/] Bargasht")
+
         choice = prompts.ask(t("choose", d), "").lower()
 
         if choice == "0":
             return
         if choice == "h":
-            help_ui.show_menu_help("3")
+            _show_hub_help(loc, local_role)
             continue
 
         if choice == "1":
-            _node_add(st, d)
-        elif choice == "2":
-            if not nodes:
-                continue
-            _node_edit(st, d, nodes)
-        elif choice == "3":
-            if not nodes:
-                continue
-            _node_delete(st, d, nodes)
+            _hub_add(st, d, loc, local_role)
+        elif choice == "2" and hubs:
+            _hub_edit(st, d, hubs, loc)
+        elif choice == "3" and hubs:
+            _hub_channels_menu(st, d, hubs, loc)
+        elif choice == "4" and hubs:
+            _hub_delete(st, d, hubs, loc)
         else:
-            console.print(f"[{C_DANGER}]{t('invalid', d)}[/]")
+            console.print(f"[{C_DANGER}]Invalid[/]")
             prompts.pause()
+
+
+def _show_hub_help(loc: str, local_role: str = "iran_server") -> None:
+    """Detailed help for hub management (role-aware, plain text)."""
+    console.clear()
+    console.print()
+
+    meta = ROLE_META[local_role]
+
+    console.print(Panel(
+        Text.from_markup(
+            f"[bold {C_TITLE}]\U0001f4da  RAHNAMA — {meta['menu_title']}[/]\n"
+            f"[{C_MUTED}]Tozihat-e kamel[/]\n"
+        ),
+        border_style=meta["color"],
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+    console.print()
+
+    # ─── Use plain strings (not f-strings) to avoid markup issues ───
+    if local_role == "iran_server":
+        body1 = """[bold #5b9bff]\U0001f5fa  To rooye KHAREJ hasti[/]
+
+  [bold #ffffff]Naqsh-e to:[/] [#8e8e93]Node server — frpc rooye hamin server ejra mishe[/]
+  [bold #ffffff]Naqsh-e Hub:[/] [#8e8e93]Server-e IRAN (frps) — behesh vasl mishim[/]
+
+  [bold #ffffff]Hub dar inja chie?[/]
+  [#8e8e93]Har Hub = yek server-e IRAN ke frpc-e in server behesh vasl mishe.[/]
+  [#8e8e93]Mesal: server-e IRAN-e asli, server-e backup[/]"""
+
+        body2 = """[bold #7ec699]\U0001f504  Jaryan-e kar (Workflow)[/]
+
+  [bold #ffffff]Ravesh 1 — Automatic (pishnahadi):[/]
+  [#8e8e93]1. Rooye server-e IRAN, az menu [7] compact besaz[/]
+  [#8e8e93]2. Inja az menu [8] Import kon[/]
+  [#8e8e93]3. Hub + channel-ha khodkar sakhte mishan[/]
+
+  [bold #ffffff]Ravesh 2 — Manual:[/]
+  [#8e8e93]1. Inja yek Hub add kon (esm + IP server-e IRAN)[/]
+  [#8e8e93]2. Channel-ha ro be in Hub vasl kon (menu [3])[/]
+  [#8e8e93]3. Port + token ro ba IRAN sync kon[/]"""
+
+        body3 = """[bold #ffb86c]\U0001f4a1 Chand nokte mohem[/]
+
+  [bold #ffffff]•[/] [#8e8e93]Esm-e Hub bayad ba esm-e compact yeksan bashe[/]
+  [bold #ffffff]•[/] [#8e8e93]Chand Hub mitoonan hamzaman bashe (HA)[/]
+  [bold #ffffff]•[/] [#8e8e93]Age yek IRAN down beshe, baghi kar mikonan[/]
+  [bold #ffffff]•[/] [#8e8e93]frpc rooye in server be IRAN vasl mishe[/]
+  [bold #ffffff]•[/] [#8e8e93]Age Hub ro pak koni, hame channel-hash pak mishan[/]"""
+    else:
+        body1 = """[bold #5b9bff]\U0001f5fa  To rooye IRAN hasti[/]
+
+  [bold #ffffff]Naqsh-e to:[/] [#8e8e93]Hub server — frps rooye hamin server ejra mishe[/]
+  [bold #ffffff]Naqsh-e Hub:[/] [#8e8e93]Server-e KHAREJ (frpc) — inja behesh service midim[/]
+
+  [bold #ffffff]Hub dar inja chie?[/]
+  [#8e8e93]Har Hub = yek server-e kharej ke traffic behesh ferestade mishe.[/]
+  [#8e8e93]Mesal: server-e Hetzner, Vultr, DO[/]"""
+
+        body2 = """[bold #7ec699]\U0001f504  Jaryan-e kar (Workflow)[/]
+
+  [bold #ffffff]Gadam 1:[/] [#8e8e93]Add Hub (esm + IP server-e kharej)[/]
+  [bold #ffffff]Gadam 2:[/] [#8e8e93]Route besaz (menu [4] ya [5])[/]
+  [bold #ffffff]Gadam 3:[/] [#8e8e93]Export (menu [7])[/]
+  [bold #ffffff]Gadam 4:[/] [#8e8e93]Import rooye kharej[/]"""
+
+        body3 = """[bold #ffb86c]\U0001f4a1 Chand nokte mohem[/]
+
+  [bold #ffffff]•[/] [#8e8e93]Har Hub = yek server-e kharej (yek IP)[/]
+  [bold #ffffff]•[/] [#8e8e93]Chand Route be hamoon Hub (chand port)[/]
+  [bold #ffffff]•[/] [#8e8e93]Chand Hub hamzaman (chand server)[/]
+  [bold #ffffff]•[/] [#8e8e93]HAProxy rooye IRAN traffic rooye channel-ha pakhsh mikone[/]"""
+
+    console.print(Panel(
+        Text.from_markup(body1),
+        border_style=C_INFO,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+    console.print()
+    console.print(Panel(
+        Text.from_markup(body2),
+        border_style=C_SUCCESS,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+    console.print()
+    console.print(Panel(
+        Text.from_markup(body3),
+        border_style=C_WARNING,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+
+    console.print()
+    console.input(f"[{C_MUTED}]Enter bezan baraye bargasht...[/]")
+
+
+
+
+def _hub_add(st: dict, d: Defaults, loc: str = "IRAN",
+             local_role: str = "kharej_server") -> None:
+    """Add a new hub with the correct role."""
+    import re as _re
+
+    meta = ROLE_META[local_role]
+
+    console.print()
+    console.print(Panel(
+        Text.from_markup(
+            f"[bold {meta['color']}]Adding: {meta['badge']}[/]\n"
+            f"[{C_MUTED}]{meta['what']}[/]"
+        ),
+        border_style=meta["color"],
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+    console.print()
+
+    # ─── Name ───
+    if local_role == "iran_server":
+        name_hint = "Esm-e server-e IRAN (mesal: iran-1, iran-hub-216)"
+    else:
+        name_hint = "Esm-e server-e KHAREJ (mesal: germany-1, hetzner-2)"
+
+    name = prompts.ask(name_hint)
+    if not _re.match(r"^[a-zA-Z0-9\-]{2,32}$", name):
+        console.print(f"[{C_DANGER}]Esm na-motabar (faghat a-z, 0-9, dash)[/]")
+        prompts.pause()
+        return
+    if state.get_hub(st, name):
+        console.print(f"[{C_DANGER}]Hub '{name}' ghablan vojud dare[/]")
+        prompts.pause()
+        return
+
+    # ─── Host ───
+    if local_role == "iran_server":
+        host_hint = "IP ya domain-e server-e IRAN"
+    else:
+        host_hint = "IP ya domain-e server-e KHAREJ"
+
+    host = prompts.ask(host_hint)
+
+    # ─── Location ───
+    loc_val = prompts.ask("Location (ekhtiari, mesal: Germany, IRAN)", "", allow_empty=True)
+
+    # ─── Note ───
+    note = prompts.ask("Note (ekhtiari)", "", allow_empty=True)
+
+    # ─── Create ───
+    hub = Hub(
+        name=name,
+        host=host,
+        role=local_role,
+        location=loc_val,
+        note=note,
+        type="simple",
+    )
+    state.add_hub(st, hub)
+    state.save(st)
+
+    console.print()
+    console.print(f"[{C_SUCCESS}]\u2713 {meta['badge']} '{name}' added[/]")
+    console.print(f"  Host: {host}")
+
+    # ─── Next steps ───
+    console.print()
+    console.print(f"[{C_INFO}]Next steps:[/]")
+    for line in meta["workflow"]:
+        console.print(f"  [{C_MUTED}]{line}[/]")
+
+    prompts.pause()
+
+
+
+
+def _hub_channels_menu(st: dict, d: Defaults, hubs: list, loc: str = "IRAN") -> None:
+    """Manage channels for a specific hub."""
+    sel = prompts.choose("Select hub", [h.name for h in hubs])
+    if not sel:
+        return
+
+    hub = state.get_hub(st, sel)
+    if not hub:
+        return
+
+    while True:
+        console.clear()
+        console.clear()
+
+        # Channels of this hub
+        channels = state.list_channels(st, hub=sel)
+
+        # Location badge
+        if loc == "IRAN":
+            role_badge = f"[{C_IRAN}]IRAN[/] → Hub = [{C_KHAREJ}]{sel}[/]"
+        else:
+            role_badge = f"[{C_KHAREJ}]KHAREJ[/] → Hub = [{C_IRAN}]{sel}[/]"
+
+        # Info panel
+        console.print(Panel(
+            Text.from_markup(
+                f"[bold {C_INFO}]\U0001f4e1 Channels of Hub: {sel}[/]\n\n"
+                f"  [{C_MUTED}]Role:  {role_badge}[/]\n"
+                f"  [{C_MUTED}]Host:  {hub.host}[/]\n"
+                f"  [{C_MUTED}]Type:  {hub.type}[/]\n"
+                f"  [{C_MUTED}]Routes: {hub.routes or 'none'}[/]"
+            ),
+            border_style=C_INFO,
+            box=box.ROUNDED,
+            padding=(0, 1),
+            width=MIN_WIDTH,
+        ))
+        console.print()
+
+        # Table
+        if channels:
+            tbl = Table(show_lines=False, box=box.ROUNDED)
+            tbl.add_column("#", style="dim", width=3)
+            tbl.add_column("Channel", style="cyan bold")
+            tbl.add_column("Proto", style="magenta")
+            tbl.add_column("Bind", justify="right")
+            tbl.add_column("Remote", justify="right")
+            tbl.add_column("Target", justify="right")
+            tbl.add_column("Status")
+
+            for i, ch in enumerate(channels, 1):
+                active = (systemd.is_active(ch.frps_service) or
+                          systemd.is_active(ch.frpc_service))
+                st_txt = f"[{C_SUCCESS}]ON[/]" if active else f"[{C_DANGER}]OFF[/]"
+
+                tbl.add_row(
+                    str(i),
+                    ch.name,
+                    ch.proto.upper(),
+                    str(ch.bind_port),
+                    str(ch.remote_port),
+                    str(ch.target_port),
+                    st_txt,
+                )
+            console.print(tbl)
+        else:
+            console.print(f"[{C_MUTED}]Hich channel-i baraye in Hub nist.[/]")
+            if loc == "KHAREJ":
+                console.print()
+                console.print(f"[{C_INFO}]Chegune channel ezafe konam?[/]")
+                console.print(f"  [{C_MUTED}]1. Rooye server-e IRAN (Hub), yek route besaz[/]")
+                console.print(f"  [{C_MUTED}]2. Az menu [7] Export, compact ra begir[/]")
+                console.print(f"  [{C_MUTED}]3. Az menu [8] Import, inja paste kon[/]")
+
+        console.print()
+        console.print(f"[{C_INFO}]1[/] Add channel (manual)")
+        if channels:
+            console.print(f"[{C_INFO}]2[/] Edit channel")
+            console.print(f"[{C_INFO}]3[/] Restart channel")
+            console.print(f"[{C_INFO}]4[/] View logs")
+            console.print(f"[{C_DANGER}]5[/] Delete channel")
+        console.print(f"[{C_MUTED}]0[/] Back")
+
+        choice = prompts.ask(t("choose", d), "")
+
+        if choice == "0":
+            return
+        if choice == "1":
+            _channel_add(st, d, hub, loc)
+        elif choice == "2" and channels:
+            _channel_edit(st, d, hub, channels)
+        elif choice == "3" and channels:
+            _channel_restart(st, d, channels)
+        elif choice == "4" and channels:
+            _channel_view_logs(st, d, channels)
+        elif choice == "5" and channels:
+            _channel_delete(st, d, hub, channels)
+        else:
+            console.print(f"[{C_DANGER}]Invalid[/]")
+            prompts.pause()
+
+
+def _channel_add(st: dict, d: Defaults, hub, loc: str = "IRAN") -> None:
+    """Add a channel to a hub manually."""
+    console.print()
+    console.print(f"[{C_INFO}]Adding channel to hub: {hub.name}[/]")
+    console.print()
+
+    if loc == "IRAN":
+        console.print(f"[{C_MUTED}]In side: server-e IRAN (frps)[/]")
+        console.print(f"[{C_MUTED}]In channel az IRAN be {hub.name} ({hub.host}) mire[/]")
+    else:
+        console.print(f"[{C_MUTED}]In side: server-e KHAREJ (frpc)[/]")
+        console.print(f"[{C_MUTED}]In channel az inja be IRAN ({hub.host}) mire[/]")
+    console.print()
+
+    route_port = prompts.ask_int("Route port (public on Hub, mesal 443)", 443, 1, 65535)
+    target_port = prompts.ask_int("Target port (Xray/service)", 443, 1, 65535)
+    proto_choice = prompts.choose("Protocol", ["tcp", "kcp", "quic", "ws"])
+    if not proto_choice:
+        return
+    proto = proto_choice
+
+    route_id = f"rt-{route_port}"
+    index = state.next_channel_index(st, route_id, hub.name)
+
+    bind_port = net.random_free_port(d.port_range_start, d.port_range_end)
+    token = _random_token(d.token_length)
+    remote_port = 20000 + (route_port % 10000) + index
+    iperf_port = 55000 + (route_port % 10000) + index
+
+    ch = Channel(
+        route_id=route_id,
+        hub=hub.name,
+        index=index,
+        proto=proto,
+        bind_port=bind_port,
+        token=token,
+        remote_port=remote_port,
+        target_port=target_port,
+        iperf_port=iperf_port,
+    )
+
+    # Save channel
+    state.add_channel(st, ch)
+
+    # Ensure route exists
+    route = state.get_route(st, route_id)
+    if not route:
+        route = Route(
+            id=route_id,
+            entry_port=route_port,
+            mode="balanced" if index > 1 else "simple",
+            channels=[],
+        )
+    if ch.name not in route.channels:
+        route.channels.append(ch.name)
+    state.add_route(st, route)
+
+    # Update hub routes
+    if route_port not in hub.routes:
+        hub.routes.append(route_port)
+        state.add_hub(st, hub)
+
+    # Write config
+    if loc == "IRAN":
+        _write_server_channel(ch, d)
+    else:
+        _write_client_channel(ch, hub, d)
+
+    state.save(st)
+
+    console.print()
+    console.print(f"[{C_SUCCESS}]\u2713 Channel added: {ch.name}[/]")
+    console.print(f"  bind={ch.bind_port}  remote={ch.remote_port}  target={ch.target_port}")
+    console.print()
+    console.print(f"[{C_WARNING}]\u26a0 Note: rooye taraf-e dige ham bayad channel add beshe.[/]")
+    prompts.pause()
+
+
+def _channel_edit(st: dict, d: Defaults, hub, channels: list) -> None:
+    sel = prompts.choose("Select channel", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+
+    ch.target_port = prompts.ask_int(
+        f"Target port (current: {ch.target_port})",
+        ch.target_port, 1, 65535,
+    )
+    state.add_channel(st, ch)
+    state.save(st)
+
+    if prompts.confirm("Restart service now?", default=True):
+        systemd.service_action(ch.frpc_service, "restart")
+        systemd.service_action(ch.frps_service, "restart")
+        console.print(f"[{C_SUCCESS}]\u2713 Channel updated + restarted[/]")
+
+    prompts.pause()
+
+
+def _channel_restart(st: dict, d: Defaults, channels: list) -> None:
+    sel = prompts.choose("Select channel to restart", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+    systemd.service_action(ch.frpc_service, "restart")
+    systemd.service_action(ch.frps_service, "restart")
+    console.print(f"[{C_SUCCESS}]\u2713 {ch.name} restarted[/]")
+    prompts.pause()
+
+
+def _channel_view_logs(st: dict, d: Defaults, channels: list) -> None:
+    sel = prompts.choose("Select channel", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+    console.print()
+    console.print(f"[{C_INFO}]--- {ch.name} logs ---[/]")
+    logs = systemd.logs(ch.frpc_service, 30)
+    if not logs.strip():
+        logs = systemd.logs(ch.frps_service, 30)
+    console.print(logs)
+    prompts.pause()
+
+
+def _channel_delete(st: dict, d: Defaults, hub, channels: list) -> None:
+    sel = prompts.choose("Select channel to delete", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+
+    if not prompts.confirm(f"Delete channel '{sel}'?", default=False):
+        return
+
+    _stop_channel_services(ch.name)
+    frp_server.delete_frps_config(ch)
+    frp_client.delete_frpc_config(ch)
+
+    # Remove from route
+    route = state.get_route(st, ch.route_id)
+    if route:
+        route.channels = [c for c in route.channels if c != ch.name]
+        if not route.channels:
+            state.remove_route(st, ch.route_id)
+        else:
+            state.add_route(st, route)
+
+    st.get("channels", {}).pop(ch.name, None)
+    state.save(st)
+
+    console.print(f"[{C_DANGER}]\u2713 Channel '{sel}' deleted[/]")
+    prompts.pause()
+
+
+
+
+
+def _hub_edit(st: dict, d: Defaults, hubs: list, loc: str = "IRAN", host_hint: str = "") -> None:
+    """Edit an existing hub."""
+    sel = prompts.choose(t("nodes_select", d), [h.name for h in hubs])
+    if not sel:
+        return
+    hub = state.get_hub(st, sel)
+    if not hub:
+        return
+
+    hub.host = prompts.ask(t("nodes_host", d), hub.host)
+    hub.location = prompts.ask(t("nodes_location", d), hub.location, allow_empty=True)
+    hub.note = prompts.ask(t("nodes_note", d), hub.note, allow_empty=True)
+    state.add_hub(st, hub)
+    state.save(st)
+    console.print(f"[{C_SUCCESS}]{t('nodes_updated', d, n=sel)}[/]")
+    prompts.pause()
+
+
+def _hub_delete(st: dict, d: Defaults, hubs: list, loc: str = "IRAN") -> None:
+    """Delete a hub with all its channels."""
+    sel = prompts.choose(t("nodes_select_del", d), [h.name for h in hubs])
+    if not sel:
+        return
+
+    # Show impact
+    channels = state.list_channels(st, hub=sel)
+    if not channels:
+        # Fallback: match by host IP
+        from .constants import CONFIG_DIR
+        import re as _re
+        hub = state.get_hub(st, sel)
+        if hub:
+            for c in state.list_channels(st):
+                cfg_path = CONFIG_DIR / f"frpc_{c.name}.toml"
+                if cfg_path.exists():
+                    content = cfg_path.read_text()
+                    m = _re.search(r'serverAddr\s*=\s*"([^"]+)"', content)
+                    if m and m.group(1) == hub.host:
+                        channels.append(c)
+
+    console.print()
+    console.print(f"[bold {C_WARNING}]\u26a0 This will delete the hub and all its channels:[/]")
+    console.print(f"  [{C_MUTED}]Hub: {sel}[/]")
+    console.print(f"  [{C_MUTED}]Channels: {len(channels)}[/]")
+    console.print()
+
+    if not prompts.confirm(f"Remove '{sel}'?", default=False):
+        return
+
+    removed = state.remove_hub(st, sel)
+    for cname in removed:
+        _stop_channel_services(cname)
+    state.save(st)
+
+    console.print(f"[{C_DANGER}]{t('nodes_removed', d, n=sel, c=len(removed))}[/]")
+    prompts.pause()
+
+
+def _channel_add(st: dict, d: Defaults, hub) -> None:
+    """Add a channel to a hub manually."""
+    console.print()
+    console.print(f"[{C_MUTED}]Manual channel add for hub: {hub.name}[/]")
+    console.print()
+
+    route_port = prompts.ask_int("Route port (public on hub, e.g. 443)", 443, 1, 65535)
+    target_port = prompts.ask_int("Target port (on this server)", 443, 1, 65535)
+    proto_choice = prompts.choose("Protocol", ["tcp", "kcp", "quic", "ws"])
+    if not proto_choice:
+        return
+    proto = proto_choice
+
+    route_id = f"rt-{route_port}"
+    existing = state.list_channels(st, hub=hub.name)
+    index = state.next_channel_index(st, route_id, hub.name)
+
+    bind_port = net.random_free_port(d.port_range_start, d.port_range_end)
+    token = _random_token(d.token_length)
+    remote_port = 20000 + (route_port % 10000) + index
+    iperf_port = 55000 + (route_port % 10000) + index
+
+    ch = Channel(
+        route_id=route_id,
+        hub=hub.name,
+        index=index,
+        proto=proto,
+        bind_port=bind_port,
+        token=token,
+        remote_port=remote_port,
+        target_port=target_port,
+        iperf_port=iperf_port,
+    )
+
+    # Save channel
+    state.add_channel(st, ch)
+
+    # Ensure route exists
+    route = state.get_route(st, route_id)
+    if not route:
+        route = Route(
+            id=route_id,
+            entry_port=route_port,
+            mode="balanced" if index > 1 else "simple",
+            channels=[],
+        )
+    if ch.name not in route.channels:
+        route.channels.append(ch.name)
+    state.add_route(st, route)
+
+    # Update hub routes list
+    if route_port not in hub.routes:
+        hub.routes.append(route_port)
+        state.add_hub(st, hub)
+
+    # Write frpc config for Kharej (this side)
+    _write_client_channel(ch, hub, d)
+
+    state.save(st)
+
+    console.print()
+    console.print(f"[{C_SUCCESS}]✅ Channel added:[/] {ch.name}")
+    console.print(f"   bind={ch.bind_port}  remote={ch.remote_port}  target={ch.target_port}")
+    console.print()
+    console.print(f"[{C_MUTED}]Note: rooye server-e IRAN (Hub) ham bayad compact-e marboote add beshe.[/]")
+    prompts.pause()
+
+
+def _channel_edit(st: dict, d: Defaults, hub, channels: list) -> None:
+    """Edit channel config manually."""
+    sel = prompts.choose("Select channel", [c.name for c in channels])
+    if not sel:
+        return
+
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+
+    console.print()
+    console.print(f"[{C_INFO}]Editing: {ch.name}[/]")
+    console.print()
+
+    # Editable fields
+    ch.target_port = prompts.ask_int(
+        f"Target port (current: {ch.target_port})",
+        ch.target_port, 1, 65535,
+    )
+    # Note: proto, bind_port, remote_port, token typically shouldn't change
+
+    state.add_channel(st, ch)
+    state.save(st)
+
+    # Rewrite config
+    _write_client_channel(ch, hub, d)
+
+    if prompts.confirm("Restart service now?", default=True):
+        systemd.service_action(ch.frpc_service, "restart")
+        console.print(f"[{C_SUCCESS}]✅ Channel updated + restarted[/]")
+
+    prompts.pause()
+
+
+def _channel_restart(st: dict, d: Defaults, channels: list) -> None:
+    sel = prompts.choose("Select channel to restart", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+    systemd.service_action(ch.frpc_service, "restart")
+    systemd.service_action(ch.frps_service, "restart")
+    console.print(f"[{C_SUCCESS}]✅ {ch.name} restarted[/]")
+    prompts.pause()
+
+
+def _channel_view_logs(st: dict, d: Defaults, channels: list) -> None:
+    sel = prompts.choose("Select channel", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+    console.print()
+    console.print(f"[{C_INFO}]--- {ch.name} logs ---[/]")
+    # Try frpc first, then frps
+    logs = systemd.logs(ch.frpc_service, 30)
+    if not logs.strip():
+        logs = systemd.logs(ch.frps_service, 30)
+    console.print(logs)
+    prompts.pause()
+
+
+def _channel_delete(st: dict, d: Defaults, hub, channels: list) -> None:
+    sel = prompts.choose("Select channel to delete", [c.name for c in channels])
+    if not sel:
+        return
+    ch = state.get_channel(st, sel)
+    if not ch:
+        return
+
+    if not prompts.confirm(f"Delete channel '{sel}'?", default=False):
+        return
+
+    _stop_channel_services(ch.name)
+    frp_server.delete_frps_config(ch)
+    frp_client.delete_frpc_config(ch)
+
+    # Remove from route
+    route = state.get_route(st, ch.route_id)
+    if route:
+        route.channels = [c for c in route.channels if c != ch.name]
+        if not route.channels:
+            state.remove_route(st, ch.route_id)
+        else:
+            state.add_route(st, route)
+
+    # Remove from state
+    st.get("channels", {}).pop(ch.name, None)
+    state.save(st)
+
+    console.print(f"[{C_DANGER}]✅ Channel '{sel}' deleted[/]")
+    prompts.pause()
+
+
+
+
+def _node_add(st: dict, d: Defaults) -> None:
+    """Add a new node."""
+    import re as _re
+
+    name = prompts.ask(t("nodes_name", d))
+    if not _re.match(r"^[a-zA-Z0-9\-]{2,32}$", name):
+        console.print(f"[{C_DANGER}]{t('nodes_name_invalid', d)}[/]")
+        prompts.pause()
+        return
+    if state.get_node(st, name):
+        console.print(f"[{C_DANGER}]{t('nodes_exists', d, n=name)}[/]")
+        prompts.pause()
+        return
+    host = prompts.ask(t("nodes_host", d))
+    loc_val = prompts.ask(t("nodes_location", d), "", allow_empty=True)
+    note = prompts.ask(t("nodes_note", d), "", allow_empty=True)
+    state.add_node(st, Node(name=name, host=host, location=loc_val, note=note))
+    state.save(st)
+    console.print(f"[{C_SUCCESS}]{t('nodes_added', d, n=name)}[/]")
+    prompts.pause()
+
+
+def _node_edit(st: dict, d: Defaults, nodes: list) -> None:
+    sel = prompts.choose(t("nodes_select", d), [n.name for n in nodes])
+    if not sel:
+        return
+    node = state.get_node(st, sel)
+    if not node:
+        return
+    node.host = prompts.ask(t("nodes_host", d), node.host)
+    node.location = prompts.ask(t("nodes_location", d), node.location, allow_empty=True)
+    node.note = prompts.ask(t("nodes_note", d), node.note, allow_empty=True)
+    state.add_node(st, node)
+    state.save(st)
+    console.print(f"[{C_SUCCESS}]{t('nodes_updated', d, n=sel)}[/]")
+    prompts.pause()
+
+
+def _node_delete(st: dict, d: Defaults, nodes: list, loc: str = "IRAN") -> None:
+    """Delete a node with all its channels."""
+    sel = prompts.choose(t("nodes_select_del", d), [n.name for n in nodes])
+    if not sel:
+        return
+
+    # ─── Show impact ───
+    ch_count = len(state.list_channels(st, node=sel))
+    affected_routes = []
+    for r in state.list_routes(st):
+        chs = [state.get_channel(st, cn) for cn in r.channels]
+        chs = [c for c in chs if c and c.node == sel]
+        if chs:
+            affected_routes.append(r.id)
+
+    console.print()
+    console.print(f"[bold {C_WARNING}]\u26a0 In node hame channel-hash ra az dast mide:[/]")
+    console.print(f"  [{C_MUTED}]Node: {sel}[/]")
+    console.print(f"  [{C_MUTED}]Channels: {ch_count}[/]")
+    if affected_routes:
+        console.print(f"  [{C_MUTED}]Routes-e moteaser: {', '.join(affected_routes)}[/]")
+    console.print()
+
+    if not prompts.confirm(f"Remove '{sel}' and ALL its channels?", default=False):
+        return
+
+    # ─── Remove ───
+    removed = state.remove_node(st, sel)
+    for cname in removed:
+        _stop_channel_services(cname)
+    state.save(st)
+
+    # Rebuild HAProxy if any balanced routes were affected (only on IRAN)
+    if affected_routes and loc == "IRAN":
+        try:
+            _rebuild_haproxy(st, d)
+        except Exception:
+            pass
+
+    console.print(f"[{C_DANGER}]{t('nodes_removed', d, n=sel, c=len(removed))}[/]")
+    prompts.pause()
+
 
 
 def _node_add(st: dict, d: Defaults) -> None:
@@ -1554,7 +2551,7 @@ def _run_iperf_client(ch: Channel) -> None:
         causes = []
 
         # Check if port is listening locally
-        from ..system import net as _net
+        from .system import net as _net
         if _net.is_port_free(ch.iperf_port):
             causes.append(
                 f"  [{C_WARNING}]\u2022[/] Port {ch.iperf_port} rooye hamin server "
@@ -1889,62 +2886,110 @@ def manage_routes(st: dict, d: Defaults) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def export_for_node(st: dict, d: Defaults, loc: str) -> None:
-    render_top_header(version=APP_VERSION, width=MIN_WIDTH)
+    """Export compact for a specific hub (or all hubs)."""
+    logo.show(t("logo_sub", d))
+
     if loc != "IRAN":
         console.print(f"[{C_KHAREJ}]Export faghat rooye IRAN anjam mishe.[/]")
         prompts.pause()
         return
 
-    nodes = state.list_nodes(st)
-    if not nodes:
-        console.print(f"[{C_DANGER}]{t('export_no_nodes', d)}[/]")
+    hubs = state.list_hubs(st)
+    if not hubs:
+        console.print(f"[{C_DANGER}]Hich Hub-i nadari. Aval menu [3] yek Hub add kon.[/]")
         prompts.pause()
         return
 
-    node_name = prompts.choose(t("export_which_node", d),
-                               [n.name for n in nodes])
-    if not node_name:
+    # ─── Select hub ───
+    hub_names = [h.name for h in hubs]
+    sel = prompts.choose("Kodoom Hub?", hub_names)
+    if not sel:
         return
 
-    channels = state.list_channels(st, node=node_name)
+    hub = state.get_hub(st, sel)
+    if not hub:
+        return
+
+    channels = state.list_channels(st, hub=sel)
     if not channels:
-        console.print(f"[{C_DANGER}]{t('export_no_channels', d)}[/]")
+        console.print(f"[{C_DANGER}]Hich channel-i baraye in Hub nist.[/]")
         prompts.pause()
         return
 
+    # ─── Hub IP from our own public IP ───
     hub_ip = net.detect_public_ip() or ""
-    path = compact.export_channels(channels, node_name, hub_ip)
+
+    # ─── Export ───
+    from .frp import compact as _compact
+    path = _compact.export_channels(channels, hub_name=hub.name, hub_ip=hub_ip)
 
     console.clear()
     console.print()
-    console.print(f"[bold {C_INFO}]\u2501\u2501\u2501 Export-e Config \u2501\u2501\u2501[/]")
+    console.print(Panel(
+        Text.from_markup(
+            f"[bold {C_SUCCESS}]\u2705 Export kamel shod[/]\n\n"
+            f"  [{C_MUTED}]Hub:      [/][bold {C_IRAN}]{hub.name}[/]\n"
+            f"  [{C_MUTED}]Hub IP:   [/][bold {C_CYAN}]{hub_ip}[/]\n"
+            f"  [{C_MUTED}]Channels: [/][bold {C_INFO}]{len(channels)}[/]\n"
+            f"  [{C_MUTED}]Type:     [/][bold {C_WARNING}]{hub.type}[/]\n"
+            f"  [{C_MUTED}]File:     [/][{C_CYAN}]{path}[/]"
+        ),
+        border_style=C_SUCCESS,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
     console.print()
-    console.print(f"  [{C_SUCCESS}]\u2713[/] File zakhire shod:")
-    console.print(f"    [{C_KHAREJ}]{path}[/]")
-    console.print()
-    console.print(f"[bold {C_INFO}]Line-haye compact {node_name}:[/]")
-    console.print(f"[{C_MUTED}]" + "\u2500" * 60 + "[/]")
+
+    # ─── Show content ───
+    console.print(f"[bold {C_INFO}]Compact {hub.name}:[/]")
+    console.print(f"[{C_MUTED}]" + "\u2500" * (MIN_WIDTH - 4) + "[/]")
     console.print()
     console.print(path.read_text())
-    console.print(f"[{C_MUTED}]" + "\u2500" * 60 + "[/]")
+    console.print(f"[{C_MUTED}]" + "\u2500" * (MIN_WIDTH - 4) + "[/]")
     console.print()
+
+    # ─── Next steps ───
     console.print(f"[bold {C_WARNING}]Ghadam-haye badi:[/]")
-    console.print(f"  [{C_INFO}]1.[/] In file ra copy kon (ya hame line-ha ra)")
-    console.print(f"  [{C_INFO}]2.[/] Vared-e server-e kharej ({node_name}) sho")
-    console.print(f"  [{C_INFO}]3.[/] Ejra kon: [{C_KHAREJ}]sudo frp-cli[/] \u2192 Menu [8]")
-    console.print(f"  [{C_INFO}]4.[/] Line-ha ra paste kon va Enter-e khali bezan")
-    console.print()
+    console.print(f"  [{C_INFO}]1.[/] In line-ha ro copy kon")
+    console.print(f"  [{C_INFO}]2.[/] Vared-e server-e kharej ([bold]{hub.name}[/]) sho")
+    console.print(f"  [{C_INFO}]3.[/] Menu [8] → Import az Hub")
+    console.print(f"  [{C_INFO}]4.[/] Line-ha ro paste kon, Enter-e khali bezan")
+
     prompts.pause()
 
 
+
 def import_on_node(st: dict, d: Defaults, loc: str) -> None:
-    render_top_header(version=APP_VERSION, width=MIN_WIDTH)
+    """Import compact from Hub.
+
+    Smart detection:
+      - 1 channel -> Simple Hub
+      - N channels -> Balanced Hub
+      - Existing Hub name -> auto-append number (iran-1 -> iran-1-2)
+    """
+    logo.show(t("logo_sub", d))
+
     if loc != "KHAREJ":
-        console.print(f"[{C_IRAN}]{t('import_hub_warn', d)}[/]")
+        console.print(f"[{C_IRAN}]Import faghat rooye KHAREJ anjam mishe.[/]")
         prompts.pause()
         return
 
-    console.print(f"[{C_INFO}]{t('import_paste_hint', d)}[/]\n")
+    # ─── Info ───
+    console.print(Panel(
+        Text.from_markup(
+            f"[bold {C_INFO}]\U0001f4e5  Import az Hub[/]\n\n"
+            f"  [{C_MUTED}]Compact-e sakhte shode rooye server-e IRAN ra paste kon.[/]\n"
+            f"  [{C_MUTED}]Ba'd az paste, Enter-e khali bezan ta payan.[/]"
+        ),
+        border_style=C_INFO,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
+    console.print()
+
+    # ─── Paste lines ───
     lines: list[str] = []
     while True:
         line = prompts.ask("", allow_empty=True)
@@ -1952,132 +2997,145 @@ def import_on_node(st: dict, d: Defaults, loc: str) -> None:
             break
         lines.append(line)
 
+    if not lines:
+        console.print(f"[{C_DANGER}]Hich line-i paste nakardi.[/]")
+        prompts.pause()
+        return
+
     full_text = "\n".join(lines)
-    channels = compact.import_lines(full_text)
-    if not channels:
-        console.print(f"[{C_DANGER}]{t('import_no_lines', d)}[/]")
+
+    # ─── Parse compact ───
+    from .frp import compact as _compact
+    result = _compact.parse_compact(full_text)
+
+    if not result["lines"]:
+        console.print(f"[{C_DANGER}]Hich channel-e motabar-i peyda nashod.[/]")
+        if result["errors"]:
+            console.print()
+            console.print(f"[{C_WARNING}]Errors:[/]")
+            for e in result["errors"][:5]:
+                console.print(f"  [{C_MUTED}]{e}[/]")
         prompts.pause()
         return
 
-    # Extract HUB IP from header OR from the first line
-    hub_ip_from_header = compact.extract_hub_ip_anywhere(full_text)
+    meta = result["meta"]
+    parsed_lines = result["lines"]
 
-    # Ask user for the HUB server name (Iran side)
+    # ─── Show preview ───
     console.print()
-    console.print(f"[bold {C_INFO}]Server-e IRAN (Hub) ra esm gozari kon:[/]")
-    console.print(
-        f"[{C_MUTED}]  Esm-e hamin server-e IRAN ke FRPS rooye un ejra mishe.[/]"
-    )
-    console.print(
-        f"[{C_MUTED}]  Be in esm, frpc-ha be server-e IRAN vasl mishan.[/]"
-    )
+    console.print(Panel(
+        Text.from_markup(
+            f"[bold {C_SUCCESS}]\U0001f50d  Detected:[/]\n\n"
+            f"  [{C_MUTED}]Hub Name:     [/][bold {C_IRAN}]{meta['hub_name']}[/]\n"
+            f"  [{C_MUTED}]Hub IP:       [/][bold {C_IRAN}]{meta['hub_ip'] or 'unknown'}[/]\n"
+            f"  [{C_MUTED}]Type:         [/][bold {C_WARNING}]{meta['type'].upper()}[/]\n"
+            f"  [{C_MUTED}]Channels:     [/][bold {C_INFO}]{meta['channels_count']}[/]\n"
+            f"  [{C_MUTED}]Routes:       [/][bold {C_INFO}]{sorted({item['channel'].target_port for item in parsed_lines})}[/]"
+        ),
+        border_style=C_SUCCESS,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        width=MIN_WIDTH,
+    ))
     console.print()
 
-    default_name = "iran-hub"
-    old_node_name = channels[0].node if channels else ""
-    if old_node_name:
-        console.print(
-            f"[{C_MUTED}]  (Esm-e ghadimi dar compact: '{old_node_name}' "
-            f"\u2014 be in esm nemikonim)[/]"
-        )
+    # ─── Handle existing hub name ───
+    hub_name = meta["hub_name"]
+    hub_ip = meta["hub_ip"]
+
+    existing_hub = state.get_hub(st, hub_name)
+    if existing_hub:
+        # Ask user: append number or reuse?
+        console.print(f"[{C_WARNING}]Hub '{hub_name}' ghablan vojud dare (IP: {existing_hub.host})[/]")
         console.print()
+        console.print(f"  [{C_INFO}]1[/] Reuse (channel-ha ro be in hub-e mojood add kon)")
+        console.print(f"  [{C_INFO}]2[/] Rename (esm-e jadid besaz)")
+        console.print(f"  [{C_MUTED}]0[/] Cancel")
 
-    hub_name = prompts.ask(
-        f"[{C_INFO}]Esm-e server-e IRAN[/]",
-        default=default_name,
-    ).strip()
-    if not hub_name:
-        hub_name = default_name
+        choice = prompts.ask("Entekhab", "1")
 
-    import re as _re
-    if not _re.match(r"^[a-zA-Z0-9\-]{2,32}$", hub_name):
-        console.print(f"[{C_DANGER}]  \u2717 Esm na-motabar.[/]")
-        prompts.pause()
-        return
-
-    # Ask for HUB host (IP/domain)
-    if hub_ip_from_header:
-        console.print()
-        console.print(
-            f"[{C_SUCCESS}]\u2713[/] HUB IP az compact khonde shod: "
-            f"[bold {C_INFO}]{hub_ip_from_header}[/]"
-        )
-        hub_host = hub_ip_from_header
-        if not prompts.confirm(
-            f"In IP dorost ast? ({hub_ip_from_header})",
-            default=True,
-        ):
-            hub_host = prompts.ask(
-                f"[{C_INFO}]IP ya domain-e server-e IRAN[/]",
-            ).strip()
-    else:
-        hub_host = prompts.ask(
-            f"[{C_INFO}]IP ya domain-e server-e IRAN[/]",
-        ).strip()
-
-    if not hub_host:
-        console.print(f"[{C_DANGER}]  \u2717 Host lazem ast.[/]")
-        prompts.pause()
-        return
-
-    # ─── Create or update the node in state ───
-    # Note: build the Node object directly instead of relying on get_node
-    # (which can return None if state isn't yet synced)
-    node_obj = Node(
-        name=hub_name,
-        host=hub_host,
-        location="IRAN",
-    )
-
-    existing = state.get_node(st, hub_name)
-    if existing:
-        console.print(
-            f"[{C_WARNING}]  \u26a0 Node '{hub_name}' ghablan vojud dare "
-            f"\u2014 update mishe.[/]"
-        )
-    else:
-        console.print(
-            f"[{C_SUCCESS}]  \u2713 Node '{hub_name}' sakhte shod.[/]"
-        )
-
-    state.add_node(st, node_obj)
-    state.save(st)
-
-    # Reload state to make sure everything is in sync
-    st = state.load()
-
-    # ─── Write channels and configs ───
-    for ch in channels:
-        # Use node_obj directly — we have it in memory
-        _write_client_channel(ch, node_obj, d)
-        state.add_channel(st, ch)
-        console.print(
-            f"[{C_SUCCESS}]  \u2713 {ch.name}[/] (bind {ch.bind_port})"
-        )
-
-    state.save(st)
-
-    console.print()
-    console.print(
-        f"[{C_SUCCESS}]{t('import_done', d, n=len(channels))}[/]"
-    )
-    console.print()
-    console.print(f"[bold {C_INFO}]Ghadam-haye badi:[/]")
-    console.print(
-        f"  [{C_INFO}]1.[/] Service rooye port-ha start kon:"
-    )
-    seen_ports = set()
-    for ch in channels:
-        if ch.target_port not in seen_ports:
-            console.print(
-                f"     [{C_MUTED}]127.0.0.1:{ch.target_port}[/]"
+        if choice == "0":
+            return
+        elif choice == "2":
+            new_name = prompts.ask(
+                f"Esm-e jadid baraye Hub",
+                default=f"{hub_name}-2",
             )
-            seen_ports.add(ch.target_port)
+            hub_name = new_name
+            # Update channel.hub for all
+            for item in parsed_lines:
+                item["channel"].hub = hub_name
+            meta["hub_name"] = hub_name
+
+    # ─── Ask for IP if missing ───
+    if not hub_ip:
+        hub_ip = prompts.ask(
+            f"[{C_INFO}]IP server-e IRAN (Hub)[/]"
+        )
+
+    # ─── Create or get hub ───
+    if not state.get_hub(st, hub_name):
+        hub = Hub(
+            name=hub_name,
+            host=hub_ip,
+            location="IRAN",
+            note="",
+            type=meta["type"],
+            routes=sorted({item["channel"].target_port for item in parsed_lines}),
+        )
+        state.add_hub(st, hub)
+        console.print(f"[{C_SUCCESS}]\u2713 Hub '{hub_name}' created[/]")
+    else:
+        hub = state.get_hub(st, hub_name)
+        console.print(f"[{C_SUCCESS}]\u2713 Using existing Hub '{hub_name}'[/]")
+
+    # ─── Add channels ───
+    added = []
+    skipped = []
+
+    for item in parsed_lines:
+        ch = item["channel"]
+        # Ensure hub name is correct
+        ch.hub = hub_name
+
+        # Check if channel already exists
+        if state.get_channel(st, ch.name):
+            skipped.append(ch.name)
+            continue
+
+        # Write frpc config (Kharej side)
+        _write_client_channel(ch, hub, d)
+        state.add_channel(st, ch)
+        added.append(ch.name)
+
+        # Add route if not exists
+        route = state.get_route(st, ch.route_id)
+        if not route:
+            route = Route(
+                id=ch.route_id,
+                entry_port=ch.target_port,
+                mode=meta["type"],
+                channels=[],
+            )
+        if ch.name not in route.channels:
+            route.channels.append(ch.name)
+        state.add_route(st, route)
+
+    state.save(st)
+
+    # ─── Summary ───
     console.print()
-    console.print(
-        f"  [{C_INFO}]2.[/] Health check: Menu [9]"
-    )
+    console.print(f"[{C_SUCCESS}]\u2713 Import kamel shod[/]")
+    console.print(f"  [{C_MUTED}]Added channels:   [/][{C_SUCCESS}]{len(added)}[/]")
+    if skipped:
+        console.print(f"  [{C_MUTED}]Skipped (exists): [/][{C_WARNING}]{len(skipped)}[/]")
+    console.print()
+
+    for cname in added:
+        console.print(f"  [{C_KHAREJ}]{cname}[/]")
+
     prompts.pause()
+
 
 
 def health_check(st: dict, d: Defaults, loc: str) -> None:
@@ -2112,42 +3170,130 @@ def health_check(st: dict, d: Defaults, loc: str) -> None:
 
 
 def speedtest(st: dict, d: Defaults, loc: str) -> None:
+    """Run iperf3 speedtest. Loops until user chooses Back."""
     import json
-    render_top_header(version=APP_VERSION, width=MIN_WIDTH)
-    channels = state.list_channels(st)
-    if not channels:
-        console.print(f"[yellow]{t('speed_no_tunnels', d)}[/]")
-        prompts.pause(); return
+    import subprocess as _sp
 
-    sel = prompts.choose(t("speed_select", d), [c.name for c in channels])
-    if not sel:
-        return
-    ch = state.get_channel(st, sel)
-    assert ch
+    # Loop تا کاربر Back بزنه
+    while True:
+        logo.show(t("logo_sub", d))
 
-    console.print(f"\n[{C_INFO}]1[/] {t('speed_mode_srv', d)}")
-    console.print(f"[{C_INFO}]2[/] {t('speed_mode_cli', d)}")
-    mode = prompts.ask(t("speed_mode", d), "1")
+        channels = state.list_channels(st)
+        if not channels:
+            console.print(f"[yellow]{t('speed_no_tunnels', d)}[/]")
+            prompts.pause()
+            return
 
-    if mode == "1":
-        net.ufw_allow(ch.iperf_port)
-        console.print(f"[{C_SUCCESS}]{t('speed_starting_srv', d, p=ch.iperf_port)}[/]")
-        subprocess.run(["iperf3", "-s", "-p", str(ch.iperf_port)])
-    else:
-        dur = prompts.ask_int(t("speed_duration", d), 10, 1, 120)
-        console.print(f"[{C_INFO}]{t('speed_testing', d, name=ch.name)}[/]")
-        r = subprocess.run(
-            ["iperf3", "-c", "127.0.0.1", "-p", str(ch.iperf_port),
-             "-P", "8", "-t", str(dur), "--json"],
-            capture_output=True, text=True,
-        )
-        try:
-            data = json.loads(r.stdout)
-            mbps = data["end"]["sum_received"]["bits_per_second"] / 1e6
-            console.print(f"\n[{C_SUCCESS}]{t('speed_throughput', d, m=f'{mbps:.2f}')}[/]")
-        except Exception:
-            console.print(f"[{C_DANGER}]{t('speed_failed', d, e=r.stderr[:200])}[/]")
-    prompts.pause()
+        # ─── Channel selection with Back option ───
+        console.print()
+        console.print(f"[bold {C_INFO}]Speedtest — Channel ra entekhab kon:[/]")
+        console.print(f"[{C_MUTED}]Baraye bargasht, 0 bezan.[/]")
+        console.print()
+
+        channel_choices = [
+            f"{c.name}  [{c.proto.upper()}]"
+            for c in channels
+        ]
+        channel_choices.append("0  ← Back")
+
+        sel_display = prompts.choose(t("speed_select", d), channel_choices)
+        if not sel_display or sel_display.startswith("0"):
+            return
+
+        # Extract channel name
+        sel = sel_display.split("  [")[0].strip()
+        ch = state.get_channel(st, sel)
+        if not ch:
+            console.print(f"[{C_DANGER}]Channel '{sel}' not found[/]")
+            prompts.pause()
+            continue
+
+        # ─── Mode selection ───
+        console.print()
+        console.print(f"[bold {C_INFO}]Channel:[/] [{C_KHAREJ}]{ch.name}[/]  "
+                      f"[{C_MUTED}]Protocol:[/] [{C_ACCENT}]{ch.proto.upper()}[/]  "
+                      f"[{C_MUTED}]iPerf port:[/] {ch.iperf_port}")
+        console.print()
+
+        # Default mode depends on location
+        if loc == "IRAN":
+            default_mode = "2"
+            mode_hint = "pishnahad: 2 (Client test rooye IRAN)"
+        else:
+            default_mode = "1"
+            mode_hint = "pishnahad: 1 (Server mode rooye KHAREJ)"
+
+        console.print(f"  [{C_INFO}]1[/] {t('speed_mode_srv', d)}")
+        console.print(f"  [{C_INFO}]2[/] {t('speed_mode_cli', d)}")
+        console.print(f"  [{C_MUTED}]0[/] Back")
+        console.print()
+        console.print(f"  [{C_MUTED}]{mode_hint}[/]")
+        console.print()
+
+        mode = prompts.ask(t("speed_mode", d), default_mode)
+
+        if mode == "0":
+            continue
+
+        if mode == "1":
+            # ─── Server mode ───
+            net.ufw_allow(ch.iperf_port)
+            console.print()
+            console.print(
+                f"[{C_SUCCESS}]{t('speed_starting_srv', d, p=ch.iperf_port)}[/]"
+            )
+            console.print(f"[{C_MUTED}]CTRL+C = stop[/]")
+            console.print()
+            try:
+                _sp.run(["iperf3", "-s", "-p", str(ch.iperf_port)])
+            except KeyboardInterrupt:
+                console.print(f"\n[{C_MUTED}]Server stopped.[/]")
+            prompts.pause()
+
+        else:
+            # ─── Client test ───
+            dur = prompts.ask_int(t("speed_duration", d), 10, 1, 120)
+            console.print()
+            console.print(f"[{C_INFO}]{t('speed_testing', d, name=ch.name)}[/]")
+
+            r = _sp.run(
+                ["iperf3", "-c", "127.0.0.1", "-p", str(ch.iperf_port),
+                 "-P", "8", "-t", str(dur), "--json"],
+                capture_output=True, text=True,
+            )
+            try:
+                data = json.loads(r.stdout)
+                mbps = data["end"]["sum_received"]["bits_per_second"] / 1e6
+
+                console.print()
+                console.print(f"[bold {C_SUCCESS}]━━━ Natije ━━━[/]")
+                console.print()
+                console.print(f"  [{C_MUTED}]Channel[/]     : [{C_KHAREJ}]{ch.name}[/]")
+                console.print(f"  [{C_MUTED}]Protocol[/]    : [{C_ACCENT}]{ch.proto.upper()}[/]")
+                console.print(f"  [{C_MUTED}]Duration[/]    : {dur}s, 8 streams")
+                console.print()
+                console.print(f"  [{C_MUTED}]Throughput[/]  : "
+                              f"[{C_SUCCESS}]{mbps:.2f} Mbps[/]")
+                console.print()
+
+                # Verdict
+                if mbps >= 800:
+                    verdict = f"[{C_SUCCESS}]★ Excellent[/]"
+                elif mbps >= 400:
+                    verdict = f"[{C_SUCCESS}]✓ Good[/]"
+                elif mbps >= 150:
+                    verdict = f"[{C_WARNING}]⚠ Acceptable[/]"
+                elif mbps >= 50:
+                    verdict = f"[{C_WARNING}]⚠ Slow[/]"
+                else:
+                    verdict = f"[{C_DANGER}]✗ Very slow[/]"
+                console.print(f"  [{C_MUTED}]Verdict[/]     : {verdict}")
+                console.print()
+            except Exception:
+                console.print(f"[{C_DANGER}]{t('speed_failed', d, e=r.stderr[:200])}[/]")
+
+            prompts.pause()
+        # Loop continues → back to channel selection
 
 
 def optimize_menu(st: dict, d: Defaults, loc: str) -> None:
@@ -2528,7 +3674,7 @@ def main_menu() -> None:
                 from .ui import wizard as wizard_ui
                 wizard_ui.run_wizard()
             elif choice == "3":
-                manage_nodes(st, d, loc)
+                manage_hubs(st, d, loc)
             elif choice == "4":
                 create_simple_route(st, d, loc)
             elif choice == "5":

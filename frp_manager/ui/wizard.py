@@ -258,6 +258,24 @@ def _collect_node(st: dict, custom: bool = False) -> Optional[Node]:
             continue
         break
 
+## TWEST
+
+    # Hub Name (this server's name on IRAN side)
+    hub_name = "iran-1"
+    if _is_iran_side(st):
+        console.print()
+        console.print(f"[{C_MUTED}]Esm-e in server-e IRAN (Hub):[/]")
+        console.print(f"[{C_MUTED}]In esm rooye server-e kharej estefade mishe.[/]")
+        hub_name = Prompt.ask(
+            f"[{C_INFO}]Esm-e Hub[/]",
+            default="iran-1",
+        ).strip()
+        if not hub_name:
+            hub_name = "iran-1"
+        # Save to state.meta
+        st.setdefault("meta", {})["hub_name"] = hub_name
+        state.save(st)
+
     if not custom:
         return Node(name=name, host=host, location="", note="")
 
@@ -684,6 +702,20 @@ def _preview(st: dict, node: Node, plan: dict, d) -> bool:
 
     return prompts.confirm("In route sakhte beshe?", default=True)
 
+def _is_iran_side(st: dict) -> bool:
+    """Check if running on IRAN side."""
+    meta = st.get("meta", {})
+    loc = meta.get("location", "")
+    if loc == "IRAN":
+        return True
+    if loc == "KHAREJ":
+        return False
+    from ..system import net
+    cc = net.detect_country_code(timeout=3)
+    return cc == "IR"
+
+
+
 
 def _get_hub_ip(st: dict) -> str:
     """Get HUB public IP from cache or detect."""
@@ -728,7 +760,7 @@ def _simulate_channels(st: dict, node: Node, plan: dict, d) -> list[Channel]:
 
         ch = Channel(
             route_id=route_id,
-            node=node.name,
+            hub=node.name,
             index=idx,
             proto=proto,
             bind_port=bind_port,
@@ -784,7 +816,7 @@ def _create(st: dict, node: Node, plan: dict, d) -> tuple[Node, Route, list[Chan
 
         ch = Channel(
             route_id=route_id,
-            node=node.name,
+            hub=node.name,
             index=idx,
             proto=proto,
             bind_port=bind_port,

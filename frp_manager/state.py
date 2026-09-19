@@ -1,4 +1,4 @@
-"""Centralized state management for FRP Manager v3."""
+"""Centralized state management for eXT FRP Manager v3.2."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from .constants import (
     STATE_FILE, DATA_DIR, CONFIG_DIR, LOG_DIR,
     BACKUP_DIR, EXPORT_DIR, HAPROXY_DIR,
 )
-from .models import Node, Channel, Route
+from .models import Hub, Channel, Route
 
 
 def ensure_dirs() -> None:
@@ -20,7 +20,25 @@ def ensure_dirs() -> None:
 
 
 def _fresh_state() -> dict:
-    return {"nodes": {}, "routes": {}, "channels": {}, "meta": {"version": 3}}
+    return {
+        "hubs": {},
+        "routes": {},
+        "channels": {},
+        "meta": {"version": 4},
+    }
+
+
+def _migrate_v3_to_v4(data: dict) -> dict:
+    if "nodes" in data and "hubs" not in data:
+        data["hubs"] = data.pop("nodes")
+    for cname, ch in data.get("channels", {}).items():
+        if "node" in ch and "hub" not in ch:
+            ch["hub"] = ch["node"]
+    for hname, hub in data.get("hubs", {}).items():
+        hub.setdefault("type", "simple")
+        hub.setdefault("routes", [])
+    data.setdefault("meta", {})["version"] = 4
+    return data
 
 
 def load() -> dict:
@@ -28,17 +46,26 @@ def load() -> dict:
     if not STATE_FILE.exists():
         return _fresh_state()
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        # Auto-migrate from v2 (peers/tunnels/rules) if detected
-        if "peers" in data and "nodes" not in data:
-            return _fresh_state()   # start fresh, keep old as .old file
-        # Fill missing keys
-        for k in ("nodes", "routes", "channels", "meta"):
-            data.setdefault(k, {} if k != "meta" else {})
+        raw = STATE_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        version = data.get("meta", {}).get("version", 3)
+        if version < 4 or ("nodes" in data and "hubs" not in data):
+            bak = STATE_FILE.with_suffix(
+                f".pre-migrate.{int(datetime.now().timestamp())}.json"
+            )
+            shutil.copy(STATE_FILE, bak)
+            data = _migrate_v3_to_v4(data)
+            save(data)
+        for k in ("hubs", "routes", "channels"):
+            data.setdefault(k, {})
+        data.setdefault("meta", {})
         return data
     except Exception:
         bak = STATE_FILE.with_suffix(f".corrupt.{int(datetime.now().timestamp())}")
-        shutil.copy(STATE_FILE, bak)
+        try:
+            shutil.copy(STATE_FILE, bak)
+        except Exception:
+            pass
         return _fresh_state()
 
 
@@ -50,35 +77,36 @@ def save(state: dict) -> None:
     )
 
 
-# ───── Node helpers ─────
-
-def add_node(state: dict, node: Node) -> None:
-    state.setdefault("nodes", {})[node.name] = node.to_dict()
+def add_hub(state: dict, hub: Hub) -> None:
+    state.setdefault("hubs", {})[hub.name] = hub.to_dict()
 
 
-def get_node(state: dict, name: str) -> Optional[Node]:
-    d = state.get("nodes", {}).get(name)
-    return Node.from_dict(d) if d else None
+def get_hub(state: dict, name: str) -> Optional[Hub]:
+    d = state.get("hubs", {}).get(name)
+    return Hub.from_dict(d) if d else None
 
 
-def list_nodes(state: dict) -> list[Node]:
-    return [Node.from_dict(d) for d in state.get("nodes", {}).values()]
+def list_hubs(state: dict) -> list:
+    return [Hub.from_dict(d) for d in state.get("hubs", {}).values()]
 
 
-def remove_node(state: dict, name: str) -> list[str]:
-    """Remove node + all its channels. Returns removed channel names."""
+def remove_hub(state: dict, name: str) -> list:
     removed = []
     for cname, c in list(state.get("channels", {}).items()):
-        if c["node"] == name:
+        if c.get("hub") == name or c.get("node") == name:
             removed.append(cname)
             del state["channels"][cname]
     for r in state.get("routes", {}).values():
         r["channels"] = [c for c in r["channels"] if c not in removed]
-    state.get("nodes", {}).pop(name, None)
+    state.get("hubs", {}).pop(name, None)
     return removed
 
 
-# ───── Route helpers ─────
+add_node = add_hub
+get_node = get_hub
+list_nodes = list_hubs
+remove_node = remove_hub
+
 
 def add_route(state: dict, route: Route) -> None:
     state.setdefault("routes", {})[route.id] = route.to_dict()
@@ -96,14 +124,13 @@ def get_route_by_port(state: dict, port: int) -> Optional[Route]:
     return None
 
 
-def list_routes(state: dict) -> list[Route]:
+def list_routes(state: dict) -> list:
     out = [Route.from_dict(d) for d in state.get("routes", {}).values()]
     out.sort(key=lambda r: r.entry_port)
     return out
 
 
-def remove_route(state: dict, rid: str) -> list[str]:
-    """Remove route + all its channels. Returns removed channel names."""
+def remove_route(state: dict, rid: str) -> list:
     r = get_route(state, rid)
     if not r:
         return []
@@ -114,8 +141,6 @@ def remove_route(state: dict, rid: str) -> list[str]:
     return removed
 
 
-# ───── Channel helpers ─────
-
 def add_channel(state: dict, ch: Channel) -> None:
     state.setdefault("channels", {})[ch.name] = ch.to_dict()
 
@@ -125,29 +150,54 @@ def get_channel(state: dict, name: str) -> Optional[Channel]:
     return Channel.from_dict(d) if d else None
 
 
-def list_channels(state: dict, route_id: str | None = None,
-                  node: str | None = None) -> list[Channel]:
+def list_channels(state: dict, route_id=None, hub=None, node=None) -> list:
+    filter_name = hub or node
     out = []
     for d in state.get("channels", {}).values():
         c = Channel.from_dict(d)
         if route_id and c.route_id != route_id:
             continue
-        if node and c.node != node:
+        if filter_name and c.hub != filter_name:
             continue
         out.append(c)
-    out.sort(key=lambda c: (c.route_id, c.node, c.index))
+    out.sort(key=lambda c: (c.route_id, c.hub, c.index))
     return out
 
 
-def next_channel_index(state: dict, route_id: str, node: str) -> int:
+def next_channel_index(state: dict, route_id: str, hub: str) -> int:
     max_i = 0
-    for c in list_channels(state, route_id=route_id, node=node):
+    for c in list_channels(state, route_id=route_id, hub=hub):
         max_i = max(max_i, c.index)
     return max_i + 1
 
 
-# ───── All-in-one removal ─────
-
 def remove_all(state: dict) -> None:
     state.clear()
     state.update(_fresh_state())
+
+
+def group_channels_by_hub(state: dict) -> dict:
+    groups = {}
+    for c in list_channels(state):
+        groups.setdefault(c.hub, []).append(c)
+    return groups
+
+
+def hub_summary(state: dict, hub_name: str) -> dict:
+    from .system import systemd
+    channels = list_channels(state, hub=hub_name)
+    summary = {
+        "total": len(channels),
+        "online": 0,
+        "offline": 0,
+        "by_proto": {"tcp": 0, "kcp": 0, "quic": 0, "ws": 0},
+        "routes": sorted({c.target_port for c in channels}),
+    }
+    for c in channels:
+        if systemd.is_active(c.frps_service) or systemd.is_active(c.frpc_service):
+            summary["online"] += 1
+        else:
+            summary["offline"] += 1
+        if c.proto in summary["by_proto"]:
+            summary["by_proto"][c.proto] += 1
+    return summary

@@ -1,6 +1,6 @@
 [project]
 name = "frp-manager"
-version = "3.1"
+version = "3.7"
 description = "Advanced FRP Multi-Protocol Tunnel Manager with HAProxy aggregation + Textual TUI"
 requires-python = ">=3.10"
 dependencies = [

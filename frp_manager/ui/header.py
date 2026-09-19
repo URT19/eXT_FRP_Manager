@@ -86,7 +86,7 @@ P = [
 EXTREME = [E, X, T, R, E, M, E]
 FRP = [F, R, P]
 
-APP_VERSION = "3.1"
+APP_VERSION = "3.7"
 MIN_WIDTH = 95
 
 

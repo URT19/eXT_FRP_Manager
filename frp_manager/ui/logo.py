@@ -83,7 +83,7 @@ PROTOCOL_COLORS = {
 }
 
 
-def show(version: str = "3.1", protocols: str = "", width: int = 120) -> None:
+def show(version: str = "3.7", width: int = 120) -> None:
     """Print EXTREME FRP logo (purple EXTREME, cyan FRP)."""
     console.clear()
 
