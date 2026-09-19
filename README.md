@@ -1,10 +1,11 @@
 <div align="center">
 
-# 🚀 eXtreme FRP Manager v3.1
+# 🚀 eXtreme FRP Manager v3.7
 
 **مدیر پیشرفته تونل FRP چندپروتکلی با تجمیع HAProxy**
+<img width="776" height="753" alt="image" src="https://github.com/user-attachments/assets/e119441e-1658-440d-9370-6631df617353" />
 
-<img width="674" height="648" alt="image" src="https://github.com/user-attachments/assets/b246232a-4156-4c80-96ca-f8c1139d7913" />
+
 
 
 
